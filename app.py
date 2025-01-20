@@ -54,7 +54,7 @@ def get_chat_response(message: str, client, settings: dict):
     try:
         with st.spinner("Thinking..."):
             response = client.invoke_model(
-                modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+                modelId="arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # Correct full ARN
                 contentType="application/json",
                 accept="application/json",
                 body=json.dumps({
