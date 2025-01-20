@@ -13,7 +13,7 @@ from perplexity import Perplexity
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
 # Initialize Perplexity client
-perplexity_client = Perplexity(api_key=st.secrets["perplexity"]["PERPLEXITY_API_KEY"])
+perplexity_client = Perplexity(api_key=st.secrets["PERPLEXITY_API_KEY"])
 
 # Helper function for safe HTML handling
 def safe_html(text: str) -> str:
@@ -27,7 +27,8 @@ def safe_html(text: str) -> str:
 def invoke_bedrock_with_retry(client, **kwargs):
     """Invoke Bedrock with exponential backoff retry logic."""
     try:
-        return client.invoke_model(**kwargs)
+        response = client.invoke_model(**kwargs)
+        return response
     except Exception as e:
         if "ThrottlingException" in str(e):
             st.warning("Rate limit reached. Waiting before retry...")
@@ -116,7 +117,6 @@ def enhance_prompt_with_search(prompt: str) -> str:
     if not st.session_state.use_search:
         return prompt
         
-    # Keywords that might trigger a search
     search_triggers = ['current', 'latest', 'news', 'recent', 'today', 'now', 'update']
     
     if any(trigger in prompt.lower() for trigger in search_triggers):
@@ -168,12 +168,17 @@ Remember: Thinking tags are REQUIRED. Do not skip them."""
 @st.cache_resource
 def get_bedrock_client():
     """Initialize and return Bedrock client."""
-    return boto3.client(
-        service_name='bedrock-runtime',
-        region_name=st.secrets["aws"]["AWS_DEFAULT_REGION"],
-        aws_access_key_id=st.secrets["aws"]["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=st.secrets["aws"]["AWS_SECRET_ACCESS_KEY"]
-    )
+    try:
+        return boto3.client(
+            service_name='bedrock-runtime',
+            region_name=st.secrets["AWS_DEFAULT_REGION"],
+            aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
+        )
+    except Exception as e:
+        st.error(f"Failed to initialize Bedrock client: {str(e)}")
+        st.info("Please check your AWS credentials in Streamlit secrets.")
+        return None
 
 def process_message(message: str, role: str, thinking: str = None) -> dict:
     """Process and format a chat message."""
@@ -262,12 +267,12 @@ for message in messages_to_display:
         </div>
         """, unsafe_allow_html=True)
         
-        if message['role'] == 'assistant' and 'thinking' in message:
+        if message['role'] == 'assistant' and message.get('thinking'):
             with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
                 st.markdown(f"""
                 <div class="thinking-container">
-                    {safe_html(message['thinking'])}
-                    <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(message['thinking'])}">Copy</button>
+                    {safe_html(message.get('thinking', ''))}
+                    <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(message.get('thinking', ''))}">Copy</button>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -284,65 +289,66 @@ if prompt := st.chat_input("Message Claude..."):
     
     with st.chat_message("assistant"):
         client = get_bedrock_client()
-        try:
-            with st.spinner("Thinking..."):
-                # First, enhance prompt with search results if needed
-                enhanced_prompt = enhance_prompt_with_search(prompt)
-                
-                conversation_history = []
-                # Add recent message history for context
-                for msg in current_chat["messages"][-5:]:
+        if client:
+            try:
+                with st.spinner("Thinking..."):
+                    # First, enhance prompt with search results if needed
+                    enhanced_prompt = enhance_prompt_with_search(prompt)
+                    
+                    conversation_history = []
+                    # Add recent message history for context
+                    for msg in current_chat["messages"][-5:]:
+                        conversation_history.append({
+                            "role": msg["role"],
+                            "content": [{"type": "text", "text": msg["content"]}]
+                        })
+                    
+                    # Add current prompt with system instructions and thinking enforcement
                     conversation_history.append({
-                        "role": msg["role"],
-                        "content": [{"type": "text", "text": msg["content"]}]
+                        "role": "user",
+                        "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(enhanced_prompt)}"}]
                     })
-                
-                # Add current prompt with system instructions and thinking enforcement
-                conversation_history.append({
-                    "role": "user",
-                    "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(enhanced_prompt)}"}]
-                })
-                
-                # Make API call with retry logic
-                response = invoke_bedrock_with_retry(
-                    client,
-                    modelId="arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-                    contentType="application/json",
-                    accept="application/json",
-                    body=json.dumps({
-                        "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": current_chat["settings"]["max_tokens"],
-                        "temperature": current_chat["settings"]["temperature"],
-                        "messages": conversation_history
-                    })
-                )
-                
-                response_body = json.loads(response['body'].read())
-                full_response = response_body['content'][0]['text']
-                
-                thinking_process, main_response = validate_thinking_process(full_response)
-                
-                current_chat["messages"].append(
-                    process_message(main_response, "assistant", thinking_process)
-                )
-                
-                st.markdown(f"""
-                <div class="message-container assistant-message">
-                    {safe_html(main_response)}
-                    <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(main_response)}">Copy</button>
-                    <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                if thinking_process:
-                    with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
-                        st.markdown(f"""
-                        <div class="thinking-container">
-                            {safe_html(thinking_process)}
-                            <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(thinking_process)}">Copy</button>
-                        </div>
-                        """, unsafe_allow_html=True)
+                    
+                    # Make API call with retry logic
+                    response = invoke_bedrock_with_retry(
+                        client,
+                        modelId="arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        contentType="application/json",
+                        accept="application/json",
+                        body=json.dumps({
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": current_chat["settings"]["max_tokens"],
+                            "temperature": current_chat["settings"]["temperature"],
+                            "messages": conversation_history
+                        })
+                    )
+                    
+                    response_body = json.loads(response['body'].read())
+                    full_response = response_body['content'][0]['text']
+                    
+                    thinking_process, main_response = validate_thinking_process(full_response)
+                    
+                    current_chat["messages"].append(
+                        process_message(main_response, "assistant", thinking_process)
+                    )
+                    
+                    st.markdown(f"""
+                    <div class="message-container assistant-message">
+                        {safe_html(main_response)}
+                        <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(main_response)}">Copy</button>
+                        <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    if thinking_process:
+                        with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
+                            st.markdown(f"""
+                            <div class="thinking-container">
+                                {safe_html(thinking_process)}
+                                <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(thinking_process)}">Copy</button>
+                            </div>
+                            """, unsafe_allow_html=True)
 
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-            st.info("If you're seeing an authentication error, please check your AWS credentials.")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+                st.info("If you're seeing an authentication error, please check your AWS credentials.")
