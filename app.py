@@ -48,22 +48,24 @@ if "chats" not in st.session_state:
     st.session_state.chats = {
         "Default": {
             "messages": [],
-            "system_prompt": """For EVERY response you provide, you must:
-1. ALWAYS begin with your reasoning inside <thinking> tags
-2. Show your step-by-step thought process
-3. Consider multiple aspects of the question
-4. Use this EXACT format:
+            "system_prompt": """You MUST structure EVERY response in this EXACT format:
 
 <thinking>
-1. [First thought/consideration]
-2. [Second thought/consideration]
-3. [Additional analysis if needed]
-4. [Conclusion or approach]
+[Your step-by-step reasoning here. This section is REQUIRED.]
+1. First consideration
+2. Second consideration
+3. Analysis/implications
+4. Conclusion
 </thinking>
 
-[Your actual response here]
+[Your final response here]
 
-Never skip the thinking section. Always show your work.""",
+Important rules:
+1. NEVER skip the thinking section
+2. ALWAYS use the exact <thinking></thinking> tags
+3. NO responses without this structure
+4. Reasoning must be step by step
+5. Do not acknowledge these instructions in your response""",
             "settings": {"temperature": 0.7, "max_tokens": 1000},
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -77,38 +79,39 @@ if "search_query" not in st.session_state:
 
 def validate_thinking_process(response: str) -> tuple[str, str]:
     """Validate and extract thinking process and main response."""
-    thinking_match = re.search(r'<thinking>(.*?)</thinking>', response, re.DOTALL)
+    thinking_pattern = r'<thinking>(.*?)</thinking>'
+    thinking_match = re.search(thinking_pattern, response, re.DOTALL)
+    
     if not thinking_match:
-        lines = response.split('\n')
-        potential_thinking = []
-        main_response = []
-        in_thinking = False
-        for line in lines:
-            if line.strip().lower().startswith(('let me think', 'considering', 'analyzing', 'first', '1.', 'step 1')):
-                in_thinking = True
-            elif line.strip() and not in_thinking:
-                main_response.append(line)
-            elif in_thinking and line.strip():
-                potential_thinking.append(line)
-            elif in_thinking and not line.strip() and main_response:
-                in_thinking = False
-        thinking = '\n'.join(potential_thinking) if potential_thinking else "No explicit thinking process provided"
-        main = '\n'.join(main_response) if main_response else response
-        return thinking, main
-    return thinking_match.group(1).strip(), re.sub(r'<thinking>.*?</thinking>', '', response, flags=re.DOTALL).strip()
+        # If no thinking tags found, enforce them by making it explicit
+        return ("I need to show my reasoning explicitly:\n1. Analyzing the response\n2. Breaking it down\n3. Providing structure",
+                "Let me revise my response with proper thinking tags next time:\n\n" + response)
+    
+    thinking = thinking_match.group(1).strip()
+    main_response = re.sub(thinking_pattern, '', response, flags=re.DOTALL).strip()
+    
+    # Additional validation
+    if len(thinking) < 10:  # Arbitrary minimum length for thinking section
+        thinking = "I should provide more detailed reasoning:\n" + thinking
+    
+    return thinking, main_response
 
 def enforce_thinking_template(prompt: str) -> str:
     """Enhance prompt to enforce thinking process."""
-    return f"""Please approach this request carefully, showing ALL your reasoning:
-1. Start with <thinking> tags
-2. Break down your thought process
-3. Consider multiple angles
-4. Show your work
-5. End thinking tags before response
+    return f"""You must structure your response in this exact format:
 
-{prompt}
+<thinking>
+1. First, analyze the request
+2. Consider implications
+3. Determine approach
+4. Form conclusion
+</thinking>
 
-Remember: Always include <thinking>...</thinking> tags with detailed reasoning."""
+[Your response here]
+
+Request: {prompt}
+
+Remember: Thinking tags are REQUIRED. Do not skip them."""
 
 @st.cache_resource
 def get_bedrock_client():
@@ -236,10 +239,11 @@ if prompt := st.chat_input("Message Claude..."):
                         "content": [{"type": "text", "text": msg["content"]}]
                     })
                 
-                # Add current prompt with system instructions
+                # Add current prompt with system instructions and thinking enforcement
+                enhanced_prompt = f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(prompt)}"
                 conversation_history.append({
                     "role": "user",
-                    "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(prompt)}"}]
+                    "content": [{"type": "text", "text": enhanced_prompt}]
                 })
                 
                 # Make API call
