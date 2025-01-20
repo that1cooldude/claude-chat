@@ -1,3 +1,4 @@
+
 import streamlit as st 
 import boto3
 import json
@@ -295,7 +296,7 @@ def get_chat_response(prompt: str, conversation_history: list, client, settings:
         with st.spinner("Thinking..."):
             response = invoke_bedrock_with_retry(
                 client,
-                modelId="anthropic.claude-v2",
+                modelId="us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # Updated with your inference profile ID
                 body=json.dumps({
                     "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
                     "max_tokens_to_sample": settings["max_tokens"],
