@@ -13,7 +13,7 @@ import csv
 # Page config
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
-# CSS and JavaScript
+# CSS and JavaScript with fixes
 st.markdown("""
 <style>
     .message-container { 
@@ -21,39 +21,59 @@ st.markdown("""
         padding: 15px; 
         border-radius: 10px; 
         position: relative; 
-        border: 1px solid rgba(255,255,255,0.1); 
+        border: 1px solid rgba(255,255,255,0.1);
+        transition: box-shadow 0.3s ease;
+    }
+    .message-container:hover {
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
     }
     .message-content {
         margin-bottom: 10px;
         white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.5;
     }
-    .user-message { background-color: #2e3136; margin-left: 20px; }
-    .assistant-message { background-color: #36393f; margin-right: 20px; }
+    .user-message { 
+        background-color: #2e3136; 
+        margin-left: 20px;
+        border-left: 3px solid #5865F2;
+    }
+    .assistant-message { 
+        background-color: #36393f; 
+        margin-right: 20px;
+        border-left: 3px solid #43B581;
+    }
     .thinking-container { 
         background-color: #1e1e2e; 
         border-left: 3px solid #ffd700; 
-        padding: 10px; 
+        padding: 15px; 
         margin: 10px 0; 
-        font-style: italic; 
+        font-style: italic;
+        border-radius: 5px;
     }
     .timestamp { 
         font-size: 0.8em; 
         color: rgba(255,255,255,0.5); 
         text-align: right; 
-        margin-top: 5px; 
+        margin-top: 5px;
     }
     .message-actions {
         position: absolute;
-        right: 5px;
-        top: 5px;
+        right: 10px;
+        top: 10px;
         opacity: 0;
-        transition: all 0.2s ease;
+        transition: opacity 0.2s ease;
         display: flex;
-        gap: 5px;
+        gap: 8px;
+        background: rgba(0,0,0,0.4);
+        padding: 5px;
+        border-radius: 5px;
     }
-    .message-container:hover .message-actions { opacity: 1; }
+    .message-container:hover .message-actions { 
+        opacity: 1; 
+    }
     .action-btn { 
-        padding: 4px 8px; 
+        padding: 5px 10px; 
         background-color: rgba(255,255,255,0.1);
         border: 1px solid rgba(255,255,255,0.2); 
         border-radius: 4px; 
@@ -62,8 +82,13 @@ st.markdown("""
         cursor: pointer;
         transition: all 0.2s ease;
     }
-    .action-btn:hover { background-color: rgba(255,255,255,0.2); }
-    .reaction-btn.active { background-color: rgba(50, 205, 50, 0.3); }
+    .action-btn:hover { 
+        background-color: rgba(255,255,255,0.2);
+        transform: translateY(-1px);
+    }
+    .reaction-btn.active { 
+        background-color: rgba(50, 205, 50, 0.3); 
+    }
     .favorite-prompt { 
         padding: 10px; 
         margin: 5px 0; 
@@ -71,23 +96,27 @@ st.markdown("""
         border-radius: 5px; 
         cursor: pointer; 
     }
-    .favorite-prompt:hover { background-color: rgba(255,255,255,0.2); }
-    .edit-area { 
-        margin-top: 10px; 
-        background-color: rgba(0,0,0,0.2); 
-        padding: 10px; 
-        border-radius: 5px; 
+    .favorite-prompt:hover { 
+        background-color: rgba(255,255,255,0.2); 
     }
+    
     @media (max-width: 768px) {
-        .message-container { margin: 10px 5px; }
+        .message-container { 
+            margin: 10px 5px; 
+            padding: 12px;
+        }
         .message-actions { 
             opacity: 1;
             position: relative;
             right: auto;
             top: auto;
             margin-top: 10px;
+            flex-wrap: wrap;
         }
-        .stButton>button { width: 100%; }
+        .action-btn {
+            flex: 1;
+            justify-content: center;
+        }
     }
 </style>
 
@@ -97,39 +126,66 @@ function copyMessage(element) {
     const messageContent = messageContainer.querySelector('.message-content');
     const text = messageContent.textContent.trim();
     
-    navigator.clipboard.writeText(text).then(() => {
-        element.innerText = 'Copied!';
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    
+    textarea.select();
+    try {
+        document.execCommand('copy');
+        element.innerHTML = '✓ Copied!';
         element.style.backgroundColor = 'rgba(50, 205, 50, 0.3)';
-        setTimeout(() => {
-            element.innerText = 'Copy';
-            element.style.backgroundColor = '';
-        }, 2000);
-    }).catch(() => {
-        element.innerText = 'Error!';
-        setTimeout(() => element.innerText = 'Copy', 2000);
-    });
+    } catch (err) {
+        element.innerHTML = '✗ Error!';
+        element.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+    }
+    
+    document.body.removeChild(textarea);
+    
+    setTimeout(() => {
+        element.innerHTML = '📋 Copy';
+        element.style.backgroundColor = '';
+    }, 2000);
 }
 
 function editMessage(idx) {
-    window.streamlitApp.setComponentValue({action: 'edit', messageIdx: idx});
+    window.streamlit.setComponentValue({
+        action: 'edit',
+        messageIdx: idx
+    });
 }
 
 function deleteMessage(idx) {
     if (confirm('Delete this message?')) {
-        window.streamlitApp.setComponentValue({action: 'delete', messageIdx: idx});
+        window.streamlit.setComponentValue({
+            action: 'delete',
+            messageIdx: idx
+        });
     }
 }
 
 function retryMessage(idx) {
-    window.streamlitApp.setComponentValue({action: 'retry', messageIdx: idx});
+    window.streamlit.setComponentValue({
+        action: 'retry',
+        messageIdx: idx
+    });
 }
 
 function reactToMessage(idx, reaction) {
-    window.streamlitApp.setComponentValue({action: 'react', messageIdx: idx, reaction: reaction});
+    window.streamlit.setComponentValue({
+        action: 'react',
+        messageIdx: idx,
+        reaction: reaction
+    });
 }
 
 function favoritePrompt(prompt) {
-    window.streamlitApp.setComponentValue({action: 'favorite', prompt: prompt});
+    window.streamlit.setComponentValue({
+        action: 'favorite',
+        prompt: prompt
+    });
 }
 </script>
 """, unsafe_allow_html=True)
@@ -152,18 +208,16 @@ if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 if "editing_message" not in st.session_state:
     st.session_state.editing_message = None
-if "message_action" not in st.session_state:
-    st.session_state.message_action = None
 if "favorite_prompts" not in st.session_state:
     st.session_state.favorite_prompts = []
-if "reactions" not in st.session_state:
-    st.session_state.reactions = {}
 
 def safe_html(text: str) -> str:
+    """Safely escape HTML characters"""
     return html.escape(str(text))
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def invoke_bedrock_with_retry(client, **kwargs):
+    """Invoke Bedrock with retry logic"""
     try:
         return client.invoke_model(**kwargs)
     except Exception as e:
@@ -174,6 +228,7 @@ def invoke_bedrock_with_retry(client, **kwargs):
 
 @st.cache_resource
 def get_bedrock_client():
+    """Initialize and cache Bedrock client"""
     try:
         return boto3.client(
             service_name='bedrock-runtime',
@@ -186,6 +241,7 @@ def get_bedrock_client():
         return None
 
 def process_message(message: str, role: str, thinking: str = None) -> dict:
+    """Process and format a message"""
     return {
         "role": role,
         "content": message,
@@ -195,6 +251,7 @@ def process_message(message: str, role: str, thinking: str = None) -> dict:
     }
 
 def get_chat_response(prompt: str, conversation_history: list, client, settings: dict):
+    """Get response from Claude"""
     try:
         with st.spinner("Thinking..."):
             response = invoke_bedrock_with_retry(
@@ -224,6 +281,21 @@ def get_chat_response(prompt: str, conversation_history: list, client, settings:
     except Exception as e:
         st.error(f"Error: {str(e)}")
         return None, None
+
+def export_chat_to_csv(chat):
+    """Export chat to CSV format"""
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Role', 'Content', 'Thinking Process', 'Timestamp', 'Reactions'])
+    for message in chat["messages"]:
+        writer.writerow([
+            message["role"],
+            message["content"],
+            message.get("thinking", ""),
+            message.get("timestamp", ""),
+            json.dumps(message.get("reactions", {}))
+        ])
+    return output.getvalue()
 
 # Sidebar
 with st.sidebar:
@@ -289,20 +361,10 @@ with st.sidebar:
             )
     with col2:
         if st.button("Export CSV"):
-            csv_data = StringIO()
-            writer = csv.writer(csv_data)
-            writer.writerow(['Role', 'Content', 'Thinking', 'Timestamp', 'Reactions'])
-            for message in current_chat["messages"]:
-                writer.writerow([
-                    message["role"],
-                    message["content"],
-                    message.get("thinking", ""),
-                    message.get("timestamp", ""),
-                    json.dumps(message.get("reactions", {}))
-                ])
+            csv_data = export_chat_to_csv(current_chat)
             st.download_button(
                 "Download CSV",
-                data=csv_data.getvalue(),
+                data=csv_data,
                 file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv"
             )
@@ -317,7 +379,7 @@ with st.sidebar:
 st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
 
 # Search functionality
-st.session_state.search_query = st.text_input("🔍 Search messages")
+st.session_state.search_query = st.text_input("🔍 Search messages", key="search")
 
 # Display messages
 messages_to_display = current_chat["messages"]
@@ -348,31 +410,54 @@ for idx, message in enumerate(messages_to_display):
                     st.session_state.editing_message = None
                     st.rerun()
         else:
+            # Prepare action buttons
+            action_buttons = ""
+            if message["role"] == "user":
+                action_buttons = f"""
+                <button class="action-btn" onclick="editMessage({idx})">✏️ Edit</button>
+                <button class="action-btn" onclick="deleteMessage({idx})">🗑️ Delete</button>
+                """
+                if message["content"] not in st.session_state.favorite_prompts:
+                    action_buttons += f"""
+                    <button class="action-btn" onclick="favoritePrompt('{safe_html(message['content'])}')">
+                        ⭐ Favorite
+                    </button>
+                    """
+            elif message["role"] == "assistant":
+                action_buttons = f"""
+                <button class="action-btn" onclick="retryMessage({idx})">🔄 Retry</button>
+                <button class="action-btn" onclick="reactToMessage({idx}, 'like')">
+                    👍 {message.get('reactions', {}).get('likes', 0)}
+                </button>
+                <button class="action-btn" onclick="reactToMessage({idx}, 'dislike')">
+                    👎 {message.get('reactions', {}).get('dislikes', 0)}
+                </button>
+                """
+            
+            # Display message
             st.markdown(f"""
             <div class="message-container {message['role']}-message">
                 <div class="message-content">{safe_html(message['content'])}</div>
                 <div class="message-actions">
-                    <button class="action-btn" onclick="copyMessage(this)">Copy</button>
-                    {'''<button class="action-btn" onclick="editMessage(''' + str(idx) + ''')">Edit</button>''' if message['role'] == 'user' else ''}
-                    {'''<button class="action-btn" onclick="retryMessage(''' + str(idx) + ''')">Retry</button>''' if message['role'] == 'assistant' else ''}
-                    {'''<button class="action-btn" onclick="reactToMessage(''' + str(idx) + ''', \'like\')">👍 ''' + str(message.get('reactions', {}).get('likes', 0)) + '''</button>''' if message['role'] == 'assistant' else ''}
-                    {'''<button class="action-btn" onclick="reactToMessage(''' + str(idx) + ''', \'dislike\')">👎 ''' + str(message.get('reactions', {}).get('dislikes', 0)) + '''</button>''' if message['role'] == 'assistant' else ''}
+                    <button class="action-btn" onclick="copyMessage(this)">📋 Copy</button>
+                    {action_buttons}
                 </div>
                 <div class="timestamp">{message.get('timestamp', 'No timestamp')}</div>
             </div>
             """, unsafe_allow_html=True)
             
+            # Display thinking process for assistant messages
             if message['role'] == 'assistant' and message.get('thinking'):
                 with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
                     st.markdown(f"""
                     <div class="thinking-container">
                         <div class="message-content">{safe_html(message['thinking'])}</div>
-                        <button class="action-btn" onclick="copyMessage(this)">Copy</button>
+                        <button class="action-btn" onclick="copyMessage(this)">📋 Copy</button>
                     </div>
                     """, unsafe_allow_html=True)
 
 # Handle message actions
-if 'message_action' in st.session_state and st.session_state.message_action:
+if st.session_state.get('message_action'):
     action = st.session_state.message_action
     if action['action'] == 'edit':
         st.session_state.editing_message = action['messageIdx']
@@ -404,6 +489,9 @@ if 'message_action' in st.session_state and st.session_state.message_action:
         if 'reactions' not in current_chat["messages"][msg_idx]:
             current_chat["messages"][msg_idx]['reactions'] = {'likes': 0, 'dislikes': 0}
         current_chat["messages"][msg_idx]['reactions'][f"{reaction}s"] += 1
+    elif action['action'] == 'favorite':
+        if action['prompt'] not in st.session_state.favorite_prompts:
+            st.session_state.favorite_prompts.append(action['prompt'])
     
     st.session_state.message_action = None
     st.rerun()
