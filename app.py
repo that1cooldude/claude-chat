@@ -147,16 +147,15 @@ st.title("🤖 Enhanced Claude Chat")
 with st.sidebar:
     st.header("Settings")
     
-    # Model selection
+    # Model selection with correct IDs
     model = st.selectbox(
         "Model",
         [
-            "claude-3-5-sonnet-20241022-v2:0",  # Updated model ID
-            "claude-3-5-haiku-20241022-v1:0"    # Updated model ID
+            "claude-3-sonnet-20241022-v1",  # Removed :0 suffix
+            "claude-3-haiku-20241022-v1"    # Removed :0 suffix
         ],
         format_func=lambda x: "Claude 3.5 Sonnet" if "sonnet" in x else "Claude 3.5 Haiku"
     )
-
     
     # Parameters
     temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
@@ -237,14 +236,15 @@ if prompt := st.chat_input("Your message here..."):
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                full_prompt = f"{system_prompt}\n\nHuman: {prompt}\n\nAssistant: Let me think about this..."
-                
                 response = get_bedrock_client().invoke_model(
                     body=json.dumps({
                         "anthropic_version": "bedrock-2023-05-31",
                         "max_tokens": max_tokens,
                         "temperature": temperature,
-                        "messages": [{"role": "user", "content": full_prompt}]
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt}
+                        ]
                     }),
                     modelId=f"anthropic.{model}",
                     accept="application/json",
@@ -286,8 +286,7 @@ if prompt := st.chat_input("Your message here..."):
                 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
-                if "ValidationException" in str(e):
-                    st.info("Tip: This might be due to an invalid model ID. Make sure you have access to Claude 3.5 in your AWS account.")
+                st.info("Check the AWS Console to verify your model access and IDs.")
 
 # Session info
 with st.expander("Session Information"):
