@@ -6,12 +6,7 @@ from datetime import datetime
 import re
 
 # Page config
-st.set_page_config(
-    page_title="Claude Chat",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
 # Styling
 st.markdown("""
@@ -45,8 +40,7 @@ if "chats" not in st.session_state:
     st.session_state.chats = {
         "Default": {
             "messages": [],
-            "system_prompt": """You are a helpful AI assistant. For EVERY response you provide, you must:
-
+            "system_prompt": """For EVERY response you provide, you must:
 1. ALWAYS begin with your reasoning inside <thinking> tags
 2. Show your step-by-step thought process
 3. Consider multiple aspects of the question
@@ -73,17 +67,14 @@ if "show_thinking" not in st.session_state:
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 
-# Helper functions
 def validate_thinking_process(response: str) -> tuple[str, str]:
     """Validate and extract thinking process and main response."""
     thinking_match = re.search(r'<thinking>(.*?)</thinking>', response, re.DOTALL)
     if not thinking_match:
-        # If no thinking tags, try to generate a thinking process
         lines = response.split('\n')
         potential_thinking = []
         main_response = []
         in_thinking = False
-        
         for line in lines:
             if line.strip().lower().startswith(('let me think', 'considering', 'analyzing', 'first', '1.', 'step 1')):
                 in_thinking = True
@@ -93,17 +84,14 @@ def validate_thinking_process(response: str) -> tuple[str, str]:
                 potential_thinking.append(line)
             elif in_thinking and not line.strip() and main_response:
                 in_thinking = False
-        
         thinking = '\n'.join(potential_thinking) if potential_thinking else "No explicit thinking process provided"
         main = '\n'.join(main_response) if main_response else response
         return thinking, main
-    
     return thinking_match.group(1).strip(), re.sub(r'<thinking>.*?</thinking>', '', response, flags=re.DOTALL).strip()
 
 def enforce_thinking_template(prompt: str) -> str:
     """Enhance prompt to enforce thinking process."""
     return f"""Please approach this request carefully, showing ALL your reasoning:
-
 1. Start with <thinking> tags
 2. Break down your thought process
 3. Consider multiple angles
@@ -138,11 +126,8 @@ def process_message(message: str, role: str, thinking: str = None) -> dict:
 # Sidebar
 with st.sidebar:
     st.title("Chat Management")
-    
-    # Search
     st.session_state.search_query = st.text_input("🔍 Search messages")
     
-    # Chat creation
     new_chat_name = st.text_input("New Chat Name")
     if st.button("Create Chat") and new_chat_name:
         if re.match(r'^[\w\-\s]+$', new_chat_name):
@@ -160,16 +145,13 @@ with st.sidebar:
         else:
             st.error("Invalid chat name. Use only letters, numbers, spaces, and hyphens")
     
-    # Chat selection
     st.session_state.current_chat = st.selectbox("Select Chat", options=list(st.session_state.chats.keys()))
     
-    # System prompt
     st.divider()
     system_prompt = st.text_area("System Prompt", value=st.session_state.chats[st.session_state.current_chat]["system_prompt"])
     if system_prompt != st.session_state.chats[st.session_state.current_chat]["system_prompt"]:
         st.session_state.chats[st.session_state.current_chat]["system_prompt"] = system_prompt
     
-    # Settings
     st.divider()
     current_chat = st.session_state.chats[st.session_state.current_chat]
     temperature = st.slider("Temperature", 0.0, 1.0, current_chat["settings"]["temperature"])
@@ -178,7 +160,6 @@ with st.sidebar:
     
     current_chat["settings"].update({"temperature": temperature, "max_tokens": max_tokens})
     
-    # Chat management
     st.divider()
     col1, col2 = st.columns(2)
     with col1:
@@ -224,9 +205,8 @@ for message in messages_to_display:
                 </div>
                 """, unsafe_allow_html=True)
 
-# Chat input
+# Chat input and response
 if prompt := st.chat_input("Message Claude..."):
-    # Add user message
     current_chat["messages"].append(process_message(prompt, "user"))
     with st.chat_message("user"):
         st.markdown(f"""
@@ -236,19 +216,14 @@ if prompt := st.chat_input("Message Claude..."):
         </div>
         """, unsafe_allow_html=True)
     
-    # Get Claude's response
     with st.chat_message("assistant"):
         client = get_bedrock_client()
         try:
             with st.spinner("Thinking..."):
                 # Prepare conversation history with thinking enforcement
-                conversation_history = [
-                    {
-                        "role": "system",
-                        "content": [{"type": "text", "text": current_chat["system_prompt"]}]
-                    }
-                ]
+                enhanced_prompt = f"{enforce_thinking_template(prompt)}"
                 
+                conversation_history = []
                 # Add recent message history for context
                 for msg in current_chat["messages"][-5:]:
                     conversation_history.append({
@@ -256,10 +231,10 @@ if prompt := st.chat_input("Message Claude..."):
                         "content": [{"type": "text", "text": msg["content"]}]
                     })
                 
-                # Add current prompt with thinking enforcement
+                # Add current prompt with system instructions
                 conversation_history.append({
                     "role": "user",
-                    "content": [{"type": "text", "text": enforce_thinking_template(prompt)}]
+                    "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enhanced_prompt}"}]
                 })
                 
                 # Make API call
@@ -275,19 +250,15 @@ if prompt := st.chat_input("Message Claude..."):
                     })
                 )
                 
-                # Process response
                 response_body = json.loads(response['body'].read())
                 full_response = response_body['content'][0]['text']
                 
-                # Extract and validate thinking process
                 thinking_process, main_response = validate_thinking_process(full_response)
                 
-                # Store response
                 current_chat["messages"].append(
                     process_message(main_response, "assistant", thinking_process)
                 )
                 
-                # Display response
                 st.markdown(f"""
                 <div class="message-container assistant-message">
                     {main_response}
