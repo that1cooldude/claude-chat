@@ -1,6 +1,7 @@
 import streamlit as st 
 import boto3
 import json
+import os
 from datetime import datetime
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -27,7 +28,6 @@ st.markdown("""
         color: rgba(255,255,255,0.5);
         margin-top: 5px;
     }
-    /* Improved mobile styling */
     @media (max-width: 768px) {
         .stButton button {
             padding: 0.5rem !important;
@@ -40,8 +40,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state with error checking
+# ----------------------------------------------------------------------------------
+# Session State Initialization
+# ----------------------------------------------------------------------------------
+
 def init_session_state():
+    """Ensure session state has default structures."""
     if "chats" not in st.session_state:
         st.session_state.chats = {
             "Default": {
@@ -55,7 +59,7 @@ def init_session_state():
     if "editing_message" not in st.session_state:
         st.session_state.editing_message = None
     
-    # Ensure current_chat exists
+    # Ensure the current_chat key actually exists
     if st.session_state.current_chat not in st.session_state.chats:
         st.session_state.current_chat = "Default"
         if "Default" not in st.session_state.chats:
@@ -67,49 +71,13 @@ def init_session_state():
 
 init_session_state()
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=6))
-def get_chat_response(message: str, client, settings: dict):
-    """Get response from Claude with proper error handling and response parsing"""
-    try:
-        with st.spinner("Claude is thinking..."):
-            response = client.invoke_model(
-                modelId="arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-                contentType="application/json",
-                accept="application/json",
-                body=json.dumps({
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": settings["max_tokens"],
-                    "temperature": settings["temperature"],
-                    "top_k": 250,
-                    "top_p": 0.999,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": message
-                                }
-                            ]
-                        }
-                    ]
-                })
-            )
-            
-            response_body = json.loads(response.get('body').read())
-            if 'content' in response_body:
-                for content in response_body['content']:
-                    if content['type'] == 'text':
-                        return content['text']
-            return "No response generated. Please try again."
-            
-    except Exception as e:
-        st.error(f"Error calling Claude: {str(e)}")
-        return None
+# ----------------------------------------------------------------------------------
+# AWS Bedrock / Claude Integration
+# ----------------------------------------------------------------------------------
 
 @st.cache_resource
 def get_bedrock_client():
-    """Initialize Bedrock client with error handling"""
+    """Initialize Bedrock client with error handling."""
     try:
         return boto3.client(
             service_name='bedrock-runtime',
@@ -121,42 +89,110 @@ def get_bedrock_client():
         st.error(f"Failed to initialize Bedrock client: {str(e)}")
         return None
 
-def process_message(message: str, role: str) -> dict:
-    """Format message with proper error handling and cleaning"""
-    try:
-        # Clean and extract message if needed
-        cleaned_message = message
-        if isinstance(message, str):
-            try:
-                msg_data = json.loads(message)
-                if isinstance(msg_data, list) and msg_data and 'text' in msg_data[0]:
-                    cleaned_message = msg_data[0]['text']
-            except json.JSONDecodeError:
-                pass  # Message is already clean
-        
-        return {
-            "role": role,
-            "content": cleaned_message,
-            "timestamp": datetime.now().strftime('%I:%M %p')
-        }
-    except Exception as e:
-        st.error(f"Error processing message: {str(e)}")
-        return {
-            "role": role,
-            "content": "Error processing message",
-            "timestamp": datetime.now().strftime('%I:%M %p')
-        }
+def build_bedrock_messages(conversation):
+    """
+    Convert the entire conversation (list of dicts) into
+    the JSON structure required by Claude on Bedrock.
+    """
+    bedrock_msgs = []
+    for msg in conversation:
+        bedrock_msgs.append({
+            "role": msg["role"],  
+            "content": [
+                {
+                    "type": "text",
+                    "text": msg["content"]
+                }
+            ]
+        })
+    return bedrock_msgs
 
-# Sidebar with error boundaries
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=6))
+def get_chat_response(client, conversation, settings):
+    """
+    Get response from Claude, using the entire conversation for multi-turn context.
+    """
+    try:
+        with st.spinner("Claude is thinking..."):
+            payload_messages = build_bedrock_messages(conversation)
+
+            response = client.invoke_model(
+                modelId=(
+                    "arn:aws:bedrock:us-east-2:127214158930:inference-profile/"
+                    "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+                ),
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps({
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": settings["max_tokens"],
+                    "temperature": settings["temperature"],
+                    "top_k": 250,
+                    "top_p": 0.999,
+                    "messages": payload_messages
+                })
+            )
+            
+            response_body = json.loads(response.get('body').read())
+            if 'content' in response_body:
+                collected_text = []
+                for item in response_body['content']:
+                    if item.get('type') == 'text':
+                        collected_text.append(item['text'])
+                final_answer = "\n".join(collected_text).strip()
+                return final_answer or "No response generated. Please try again."
+            else:
+                return "No response content found in Claude's answer."
+    except Exception as e:
+        st.error(f"Error calling Claude: {str(e)}")
+        return None
+
+# ----------------------------------------------------------------------------------
+# Helper Functions
+# ----------------------------------------------------------------------------------
+
+def process_message(message: str, role: str) -> dict:
+    """Wrap message text along with a timestamp and role."""
+    return {
+        "role": role,
+        "content": message,
+        "timestamp": datetime.now().strftime('%I:%M %p')
+    }
+
+def save_chat_to_folder(chat_name, chat_data):
+    """
+    Saves a chat (conversation) to a 'conversations' folder in JSON format.
+    """
+    os.makedirs("conversations", exist_ok=True)
+    file_path = os.path.join("conversations", f"{chat_name}.json")
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(chat_data, f, indent=2)
+    st.success(f"Conversation '{chat_name}' saved to {file_path}.")
+
+def load_chat_from_folder(chat_name):
+    """
+    Loads a chat from `conversations/{chat_name}.json`, if it exists.
+    Returns None if the file is not found.
+    """
+    file_path = os.path.join("conversations", f"{chat_name}.json")
+    if not os.path.isfile(file_path):
+        return None
+    with open(file_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+# ----------------------------------------------------------------------------------
+# Sidebar
+# ----------------------------------------------------------------------------------
+
 with st.sidebar:
     st.title("Chat Settings")
-    
+
     try:
         # Chat Management
         st.subheader("Conversations")
         new_chat_name = st.text_input("New Chat Name", key="new_chat_input")
-        if st.button("Create Chat") and new_chat_name:
-            if new_chat_name not in st.session_state.chats:
+        if st.button("Create Chat"):
+            if new_chat_name and new_chat_name not in st.session_state.chats:
                 st.session_state.chats[new_chat_name] = {
                     "messages": [],
                     "settings": {"temperature": 0.7, "max_tokens": 1000},
@@ -164,106 +200,130 @@ with st.sidebar:
                 }
                 st.session_state.current_chat = new_chat_name
                 st.rerun()
-        
+
+        # Select existing conversation
         st.session_state.current_chat = st.selectbox(
             "Select Chat",
             options=list(st.session_state.chats.keys()),
+            index=list(st.session_state.chats.keys()).index(st.session_state.current_chat)
+            if st.session_state.current_chat in st.session_state.chats
+            else 0,
             key="chat_selector"
         )
         
         # Model Settings
         st.subheader("Model Settings")
         current_chat = st.session_state.chats[st.session_state.current_chat]
-        
+
         current_chat["settings"]["temperature"] = st.slider(
             "Temperature",
             0.0, 1.0,
-            current_chat["settings"]["temperature"],
-            help="Higher = more creative, Lower = more focused"
+            current_chat["settings"].get("temperature", 0.7),
+            help="Higher = more creative / explorative. Lower = more focused / deterministic."
         )
         
         current_chat["settings"]["max_tokens"] = st.slider(
             "Max Tokens",
             100, 4096,
-            current_chat["settings"]["max_tokens"],
-            help="Maximum length of response"
+            current_chat["settings"].get("max_tokens", 1000),
+            help="Maximum length of Claude's responses."
         )
         
-        # Clear Chat with confirmation
-        if st.button("Clear Current Chat"):
-            if st.session_state.current_chat in st.session_state.chats:
-                if len(current_chat["messages"]) > 0:
-                    if st.button("Confirm Clear?", key="confirm_clear"):
-                        current_chat["messages"] = []
-                        st.rerun()
+        # Save and Load
+        st.subheader("Storage")
+        col_save, col_load = st.columns(2)
+        with col_save:
+            if st.button("Save Chat"):
+                save_chat_to_folder(st.session_state.current_chat, current_chat)
+
+        with col_load:
+            if st.button("Load Chat"):
+                loaded = load_chat_from_folder(st.session_state.current_chat)
+                if loaded is not None:
+                    st.session_state.chats[st.session_state.current_chat] = loaded
+                    st.success(f"Conversation '{st.session_state.current_chat}' loaded from folder.")
+                    st.rerun()
                 else:
+                    st.warning(f"No saved file found for '{st.session_state.current_chat}'.")
+
+        # Clear Chat with confirmation
+        st.subheader("Clear Conversation")
+        if st.button("Clear Current Chat"):
+            if len(current_chat["messages"]) > 0:
+                if st.button("Confirm Clear?"):
                     current_chat["messages"] = []
                     st.rerun()
-    
+            else:
+                current_chat["messages"] = []
+                st.rerun()
+
     except Exception as e:
         st.error(f"Error in sidebar: {str(e)}")
-        init_session_state()  # Reset to safe state
+        init_session_state()
 
-# Main chat interface
+# ----------------------------------------------------------------------------------
+# Main Chat Interface
+# ----------------------------------------------------------------------------------
+
 st.title(f"Claude Chat - {st.session_state.current_chat}")
 
 try:
-    # Message display with error handling
+    # Display existing messages
     for idx, message in enumerate(current_chat["messages"]):
         with st.chat_message(message["role"]):
             if st.session_state.editing_message == idx and message["role"] == "user":
-                # Edit mode
+                # If user is editing a message, show text_area
                 edited_message = st.text_area(
-                    "Edit message",
+                    "Edit your message",
                     message["content"],
                     key=f"edit_{idx}"
                 )
-                cols = st.columns([1,4])
-                with cols[0]:
+                col_save, col_cancel = st.columns([1, 1])
+                with col_save:
                     if st.button("Save", key=f"save_{idx}"):
                         current_chat["messages"][idx]["content"] = edited_message
                         st.session_state.editing_message = None
                         st.rerun()
-                with cols[1]:
+                with col_cancel:
                     if st.button("Cancel", key=f"cancel_{idx}"):
                         st.session_state.editing_message = None
                         st.rerun()
             else:
-                # Normal message display
+                # Normal display
                 st.markdown(message["content"])
                 st.caption(f"Time: {message['timestamp']}")
-                
-                # Message controls for user messages
+
+                # For user messages, show Edit / Delete
                 if message["role"] == "user":
-                    cols = st.columns([1,1,10])
-                    with cols[0]:
-                        if st.button("✏️", key=f"edit_{idx}", help="Edit message"):
+                    c1, c2, _ = st.columns([1,1,8])
+                    with c1:
+                        if st.button("✏️", key=f"editbtn_{idx}", help="Edit message"):
                             st.session_state.editing_message = idx
                             st.rerun()
-                    with cols[1]:
-                        if st.button("🗑️", key=f"delete_{idx}", help="Delete message"):
+                    with c2:
+                        if st.button("🗑️", key=f"delbtn_{idx}", help="Delete message"):
                             current_chat["messages"].pop(idx)
                             st.rerun()
 
-    # Chat input with error handling
-    if prompt := st.chat_input("Message Claude...", key="chat_input"):
-        # Add user message
+    # Chat input
+    prompt = st.chat_input("Message Claude...", key="chat_input")
+    if prompt:
+        # Add user's new message to conversation
         current_chat["messages"].append(process_message(prompt, "user"))
-        
-        # Get Claude response
+
+        # Get Claude response using entire conversation
         client = get_bedrock_client()
         if client:
             response = get_chat_response(
-                prompt,
-                client,
-                current_chat["settings"]
+                client=client,
+                conversation=current_chat["messages"],  # pass entire conversation
+                settings=current_chat["settings"]
             )
-            
             if response:
                 current_chat["messages"].append(
                     process_message(response, "assistant")
                 )
-                st.rerun()
+        st.experimental_rerun()
 
 except Exception as e:
     st.error(f"An error occurred: {str(e)}")
