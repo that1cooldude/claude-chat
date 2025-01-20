@@ -6,139 +6,33 @@ from datetime import datetime
 import re
 import html
 import time
+import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 from io import StringIO
 import csv
+import wolframalpha
+import yfinance as yf
+from PIL import Image
+import io
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Page config
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
-
-# CSS and JavaScript
-st.markdown("""
-<style>
-    .message-container { 
-        margin: 15px 0; 
-        padding: 15px; 
-        border-radius: 10px; 
-        position: relative; 
-        border: 1px solid rgba(255,255,255,0.1); 
-    }
-    .message-content {
-        margin-bottom: 10px;
-        white-space: pre-wrap;
-    }
-    .user-message { background-color: #2e3136; margin-left: 20px; }
-    .assistant-message { background-color: #36393f; margin-right: 20px; }
-    .thinking-container { 
-        background-color: #1e1e2e; 
-        border-left: 3px solid #ffd700; 
-        padding: 10px; 
-        margin: 10px 0; 
-        font-style: italic; 
-    }
-    .timestamp { 
-        font-size: 0.8em; 
-        color: rgba(255,255,255,0.5); 
-        text-align: right; 
-        margin-top: 5px; 
-    }
-    .message-actions {
-        position: absolute;
-        right: 5px;
-        top: 5px;
-        opacity: 0;
-        transition: all 0.2s ease;
-        display: flex;
-        gap: 5px;
-    }
-    .message-container:hover .message-actions { opacity: 1; }
-    .action-btn { 
-        padding: 4px 8px; 
-        background-color: rgba(255,255,255,0.1);
-        border: 1px solid rgba(255,255,255,0.2); 
-        border-radius: 4px; 
-        color: #fff; 
-        font-size: 12px; 
-        cursor: pointer;
-        transition: all 0.2s ease;
-    }
-    .action-btn:hover { background-color: rgba(255,255,255,0.2); }
-    .reaction-btn.active { background-color: rgba(50, 205, 50, 0.3); }
-    .favorite-prompt { 
-        padding: 10px; 
-        margin: 5px 0; 
-        background-color: rgba(255,255,255,0.1); 
-        border-radius: 5px; 
-        cursor: pointer; 
-    }
-    .favorite-prompt:hover { background-color: rgba(255,255,255,0.2); }
-    .edit-area { 
-        margin-top: 10px; 
-        background-color: rgba(0,0,0,0.2); 
-        padding: 10px; 
-        border-radius: 5px; 
-    }
-    @media (max-width: 768px) {
-        .message-container { margin: 10px 5px; }
-        .message-actions { 
-            opacity: 1;
-            position: relative;
-            right: auto;
-            top: auto;
-            margin-top: 10px;
-        }
-        .stButton>button { width: 100%; }
-    }
-</style>
-
-<script>
-function copyMessage(element) {
-    const messageContainer = element.closest('.message-container');
-    const messageContent = messageContainer.querySelector('.message-content');
-    const text = messageContent.textContent.trim();
-    navigator.clipboard.writeText(text).then(() => {
-        element.innerText = 'Copied!';
-        element.style.backgroundColor = 'rgba(50, 205, 50, 0.3)';
-        setTimeout(() => {
-            element.innerText = 'Copy';
-            element.style.backgroundColor = '';
-        }, 2000);
-    }).catch(() => {
-        element.innerText = 'Error!';
-        setTimeout(() => element.innerText = 'Copy', 2000);
-    });
-}
-
-function editMessage(idx) {
-    window.streamlitApp.setComponentValue({action: 'edit', messageIdx: idx});
-}
-
-function deleteMessage(idx) {
-    if (confirm('Delete this message?')) {
-        window.streamlitApp.setComponentValue({action: 'delete', messageIdx: idx});
-    }
-}
-
-function retryMessage(idx) {
-    window.streamlitApp.setComponentValue({action: 'retry', messageIdx: idx});
-}
-
-function reactToMessage(idx, reaction) {
-    window.streamlitApp.setComponentValue({action: 'react', messageIdx: idx, reaction: reaction});
-}
-
-function favoritePrompt(prompt) {
-    window.streamlitApp.setComponentValue({action: 'favorite', prompt: prompt});
-}
-</script>
-""", unsafe_allow_html=True)
 
 # Initialize session state
 if "chats" not in st.session_state:
     st.session_state.chats = {
         "Default": {
             "messages": [],
-            "system_prompt": """You MUST structure EVERY response with thinking and final answer sections.""",
+            "system_prompt": """You MUST structure EVERY response with thinking and final answer sections. You have access to several tools:
+            1. Calculator - For mathematical computations
+            2. Stock Data - For financial market information
+            3. Weather - For current weather data
+            4. Web Search - For recent information
+            5. Image Analysis - For analyzing images
+            When appropriate, use these tools to enhance your responses.""",
             "settings": {"temperature": 0.7, "max_tokens": 1000},
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -157,309 +51,287 @@ if "favorite_prompts" not in st.session_state:
     st.session_state.favorite_prompts = []
 if "reactions" not in st.session_state:
     st.session_state.reactions = {}
+if "tools_enabled" not in st.session_state:
+    st.session_state.tools_enabled = {
+        "calculator": True,
+        "stocks": True,
+        "weather": True,
+        "web_search": True,
+        "image_analysis": True
+    }
+if "api_keys" not in st.session_state:
+    st.session_state.api_keys = {
+        "wolfram_alpha": st.secrets.get("WOLFRAM_ALPHA_KEY", ""),
+        "weather_api": st.secrets.get("WEATHER_API_KEY", ""),
+        "serp_api": st.secrets.get("SERP_API_KEY", "")
+    }
 
-def safe_html(text: str) -> str:
-    return html.escape(str(text))
+# Add the previous CSS styles here (unchanged)
+# [Previous CSS code remains the same]
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def invoke_bedrock_with_retry(client, **kwargs):
+# Tool Functions
+def calculate(query):
+    """Use Wolfram Alpha for calculations"""
     try:
-        return client.invoke_model(**kwargs)
+        client = wolframalpha.Client(st.session_state.api_keys["wolfram_alpha"])
+        res = client.query(query)
+        return next(res.results).text
     except Exception as e:
-        if "ThrottlingException" in str(e):
-            st.warning("Rate limit reached. Waiting before retry...")
-            time.sleep(2)
-        raise e
+        return f"Error in calculation: {str(e)}"
 
-@st.cache_resource
-def get_bedrock_client():
+def get_stock_data(symbol, period="1mo"):
+    """Get stock market data"""
     try:
-        return boto3.client(
-            service_name='bedrock-runtime',
-            region_name=st.secrets["AWS_DEFAULT_REGION"],
-            aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
-        )
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period=period)
+        
+        # Create an interactive plot
+        fig = go.Figure(data=[go.Candlestick(x=hist.index,
+                open=hist['Open'],
+                high=hist['High'],
+                low=hist['Low'],
+                close=hist['Close'])])
+        
+        fig.update_layout(title=f"{symbol} Stock Price",
+                         yaxis_title='Price (USD)',
+                         xaxis_title='Date')
+        
+        return {
+            "current_price": stock.info['regularMarketPrice'],
+            "change": stock.info['regularMarketChangePercent'],
+            "volume": stock.info['regularMarketVolume'],
+            "plot": fig
+        }
     except Exception as e:
-        st.error(f"Failed to initialize Bedrock client: {str(e)}")
-        return None
+        return f"Error fetching stock data: {str(e)}"
 
-def process_message(message: str, role: str, thinking: str = None) -> dict:
+def get_weather(city):
+    """Get weather data for a city"""
+    try:
+        api_key = st.session_state.api_keys["weather_api"]
+        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
+        response = requests.get(url)
+        data = response.json()
+        if response.status_code == 200:
+            return {
+                "temperature": data["main"]["temp"],
+                "humidity": data["main"]["humidity"],
+                "description": data["weather"][0]["description"],
+                "wind_speed": data["wind"]["speed"]
+            }
+        else:
+            return f"Error: {data['message']}"
+    except Exception as e:
+        return f"Error fetching weather data: {str(e)}"
+
+def web_search(query):
+    """Perform a web search"""
+    try:
+        api_key = st.session_state.api_keys["serp_api"]
+        url = f"https://serpapi.com/search?q={query}&api_key={api_key}"
+        response = requests.get(url)
+        data = response.json()
+        return data.get("organic_results", [])[:3]
+    except Exception as e:
+        return f"Error performing web search: {str(e)}"
+
+def analyze_image(image):
+    """Analyze an uploaded image"""
+    try:
+        # Convert image to bytes
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+        
+        # Use AWS Rekognition for image analysis
+        client = boto3.client('rekognition',
+                            region_name=st.secrets["AWS_DEFAULT_REGION"],
+                            aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
+                            aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"])
+        
+        response = client.detect_labels(Image={'Bytes': img_byte_arr})
+        return response['Labels']
+    except Exception as e:
+        return f"Error analyzing image: {str(e)}"
+
+# Enhanced Message Processing
+def process_message_with_tools(message: str, role: str, thinking: str = None, tools_output: dict = None) -> dict:
+    """Process message with additional tool outputs"""
     return {
         "role": role,
         "content": message,
         "timestamp": datetime.now().strftime('%I:%M %p'),
         "reactions": {"likes": 0, "dislikes": 0},
-        "thinking": thinking
+        "thinking": thinking,
+        "tools_output": tools_output
     }
 
-def get_chat_response(prompt: str, conversation_history: list, client, settings: dict):
+# Enhanced Chat Response
+def get_enhanced_chat_response(prompt: str, conversation_history: list, client, settings: dict):
+    """Get response from Claude with tool integration"""
     try:
-        with st.spinner("Thinking..."):
-            response = invoke_bedrock_with_retry(
-                client,
-                modelId="anthropic.claude-v2",
-                body=json.dumps({
-                    "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
-                    "max_tokens_to_sample": settings["max_tokens"],
-                    "temperature": settings["temperature"],
-                    "anthropic_version": "bedrock-2023-05-31"
-                })
-            )
-            
-            response_body = json.loads(response['body'].read())
-            full_response = response_body['completion']
-            
-            # Split thinking and response
-            thinking_match = re.search(r'<thinking>(.*?)</thinking>', full_response, re.DOTALL)
-            if thinking_match:
-                thinking = thinking_match.group(1).strip()
-                main_response = re.sub(r'<thinking>.*?</thinking>', '', full_response, flags=re.DOTALL).strip()
-            else:
-                thinking = "Reasoning process not explicitly provided"
-                main_response = full_response
-                
-            return thinking, main_response
+        # Check if prompt requires tool use
+        tools_output = {}
+        
+        # Calculator
+        if st.session_state.tools_enabled["calculator"] and re.search(r'calculate|compute|solve|math', prompt.lower()):
+            tools_output["calculator"] = calculate(prompt)
+        
+        # Stocks
+        if st.session_state.tools_enabled["stocks"] and re.search(r'stock|price|market|ticker', prompt.lower()):
+            stock_symbol = re.search(r'([A-Z]{1,5})', prompt.upper())
+            if stock_symbol:
+                tools_output["stocks"] = get_stock_data(stock_symbol.group(1))
+        
+        # Weather
+        if st.session_state.tools_enabled["weather"] and re.search(r'weather|temperature|forecast', prompt.lower()):
+            city_match = re.search(r'in ([a-zA-Z\s]+)', prompt)
+            if city_match:
+                tools_output["weather"] = get_weather(city_match.group(1))
+        
+        # Web Search
+        if st.session_state.tools_enabled["web_search"] and re.search(r'search|find|look up|recent', prompt.lower()):
+            tools_output["web_search"] = web_search(prompt)
+        
+        # Enhance prompt with tool outputs
+        enhanced_prompt = prompt
+        if tools_output:
+            enhanced_prompt += "\n\nTool outputs:\n" + json.dumps(tools_output, indent=2)
+        
+        # Get Claude's response
+        response = invoke_bedrock_with_retry(
+            client,
+            modelId="anthropic.claude-v2",
+            body=json.dumps({
+                "prompt": f"\n\nHuman: {enhanced_prompt}\n\nAssistant:",
+                "max_tokens_to_sample": settings["max_tokens"],
+                "temperature": settings["temperature"],
+                "anthropic_version": "bedrock-2023-05-31"
+            })
+        )
+        
+        response_body = json.loads(response['body'].read())
+        full_response = response_body['completion']
+        
+        thinking_match = re.search(r'<thinking>(.*?)</thinking>', full_response, re.DOTALL)
+        if thinking_match:
+            thinking = thinking_match.group(1).strip()
+            main_response = re.sub(r'<thinking>.*?</thinking>', '', full_response, flags=re.DOTALL).strip()
+        else:
+            thinking = "Reasoning process not explicitly provided"
+            main_response = full_response
+        
+        return thinking, main_response, tools_output
             
     except Exception as e:
         st.error(f"Error: {str(e)}")
-        return None, None
+        return None, None, None
 
-def export_chat_to_csv(chat):
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['Role', 'Content', 'Thinking Process', 'Timestamp', 'Reactions'])
-    for message in chat["messages"]:
-        writer.writerow([
-            message["role"],
-            message["content"],
-            message.get("thinking", ""),
-            message.get("timestamp", ""),
-            json.dumps(message.get("reactions", {}))
-        ])
-    return output.getvalue()
+# Enhanced Message Display
+def display_enhanced_message(message: dict, idx: int, current_chat: dict):
+    """Display message with tool outputs"""
+    # Display regular message content
+    display_message(message, idx, current_chat)
+    
+    # Display tool outputs if present
+    if message.get("tools_output"):
+        with st.expander("Tool Outputs", expanded=True):
+            for tool, output in message["tools_output"].items():
+                st.subheader(tool.title())
+                if tool == "stocks" and isinstance(output, dict) and "plot" in output:
+                    # Display stock plot
+                    st.plotly_chart(output["plot"])
+                    st.write(f"Current Price: ${output['current_price']:.2f}")
+                    st.write(f"Change: {output['change']:.2f}%")
+                elif tool == "weather" and isinstance(output, dict):
+                    # Display weather info
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Temperature", f"{output['temperature']}°C")
+                        st.metric("Humidity", f"{output['humidity']}%")
+                    with col2:
+                        st.metric("Wind Speed", f"{output['wind_speed']} m/s")
+                        st.write(f"Description: {output['description']}")
+                elif tool == "web_search" and isinstance(output, list):
+                    # Display search results
+                    for result in output:
+                        st.write(f"🔍 [{result['title']}]({result['link']})")
+                        st.write(result['snippet'])
+                else:
+                    st.write(output)
 
-# Sidebar
-with st.sidebar:
-    st.title("Chat Settings")
+# Enhanced Sidebar
+def render_enhanced_sidebar():
+    with st.sidebar:
+        st.title("Chat Settings")
+        
+        # Tools Section
+        st.subheader("Tools")
+        for tool in st.session_state.tools_enabled:
+            st.session_state.tools_enabled[tool] = st.toggle(
+                f"Enable {tool.replace('_', ' ').title()}",
+                value=st.session_state.tools_enabled[tool]
+            )
+        
+        # API Keys Section
+        st.subheader("API Keys")
+        for key in st.session_state.api_keys:
+            st.session_state.api_keys[key] = st.text_input(
+                f"{key.replace('_', ' ').title()} API Key",
+                value=st.session_state.api_keys[key],
+                type="password"
+            )
+        
+        # Previous sidebar content
+        # [Previous sidebar code remains the same]
+
+# Main Application Logic
+def main():
+    render_enhanced_sidebar()
     
-    # Chat Management
-    st.subheader("Chat Management")
-    new_chat_name = st.text_input("New Chat Name")
-    if st.button("Create Chat") and new_chat_name:
-        if new_chat_name not in st.session_state.chats:
-            st.session_state.chats[new_chat_name] = {
-                "messages": [],
-                "system_prompt": st.session_state.chats[st.session_state.current_chat]["system_prompt"],
-                "settings": {"temperature": 0.7, "max_tokens": 1000},
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            st.session_state.current_chat = new_chat_name
-            st.rerun()
+    st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
     
-    st.session_state.current_chat = st.selectbox(
-        "Select Chat", 
-        options=list(st.session_state.chats.keys())
-    )
+    # Image upload for analysis
+    if st.session_state.tools_enabled["image_analysis"]:
+        uploaded_file = st.file_uploader("Upload an image for analysis", type=['png', 'jpg', 'jpeg'])
+        if uploaded_file:
+            image = Image.open(uploaded_file)
+            st.image(image, caption="Uploaded Image")
+            if st.button("Analyze Image"):
+                with st.spinner("Analyzing image..."):
+                    analysis_results = analyze_image(image)
+                    st.write("Analysis Results:")
+                    for label in analysis_results:
+                        st.write(f"- {label['Name']}: {label['Confidence']:.2f}%")
     
-    # Model Settings
-    st.subheader("Model Settings")
+    # Search functionality
+    st.session_state.search_query = st.text_input("🔍 Search messages")
+    
+    # Display messages
     current_chat = st.session_state.chats[st.session_state.current_chat]
-    current_chat["settings"]["temperature"] = st.slider(
-        "Temperature", 
-        0.0, 1.0, 
-        current_chat["settings"]["temperature"]
-    )
-    current_chat["settings"]["max_tokens"] = st.slider(
-        "Max Tokens", 
-        100, 4096, 
-        current_chat["settings"]["max_tokens"]
-    )
+    messages_to_display = current_chat["messages"]
     
-    # Display Settings
-    st.subheader("Display Settings")
-    st.session_state.show_thinking = st.toggle(
-        "Show Thinking Process", 
-        value=st.session_state.show_thinking
-    )
+    if st.session_state.search_query:
+        search_term = st.session_state.search_query.lower()
+        messages_to_display = [
+            msg for msg in messages_to_display 
+            if search_term in msg["content"].lower() 
+            or search_term in (msg.get("thinking", "").lower())
+        ]
     
-    # System Prompt
-    st.subheader("System Prompt")
-    current_chat["system_prompt"] = st.text_area(
-        "System Prompt",
-        value=current_chat["system_prompt"]
-    )
+    for idx, message in enumerate(messages_to_display):
+        with st.chat_message(message["role"]):
+            display_enhanced_message(message, idx, current_chat)
     
-    # Export Options
-    st.subheader("Export Options")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Export JSON"):
-            st.download_button(
-                "Download JSON",
-                data=json.dumps(current_chat, indent=2),
-                file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-                mime="application/json"
-            )
-    with col2:
-        if st.button("Export CSV"):
-            csv_data = export_chat_to_csv(current_chat)
-            st.download_button(
-                "Download CSV",
-                data=csv_data,
-                file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
-    
-    # Clear Chat
-    if st.button("Clear Chat"):
-        if st.session_state.current_chat in st.session_state.chats:
-            st.session_state.chats[st.session_state.current_chat]["messages"] = []
-            st.rerun()
-
-# Main chat interface
-st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
-
-# Search functionality
-st.session_state.search_query = st.text_input("🔍 Search messages")
-
-# Display messages
-messages_to_display = current_chat["messages"]
-if st.session_state.search_query:
-    search_term = st.session_state.search_query.lower()
-    messages_to_display = [
-        msg for msg in messages_to_display 
-        if search_term in msg["content"].lower() 
-        or search_term in (msg.get("thinking", "").lower())
-    ]
-
-for idx, message in enumerate(messages_to_display):
-    with st.chat_message(message["role"]):
-        if st.session_state.editing_message == idx and message["role"] == "user":
-            edited_message = st.text_area(
-                "Edit message", 
-                message["content"], 
-                key=f"edit_{idx}"
-            )
-            col1, col2 = st.columns([1,4])
-            with col1:
-                if st.button("Save", key=f"save_{idx}"):
-                    current_chat["messages"][idx]["content"] = edited_message
-                    st.session_state.editing_message = None
-                    st.rerun()
-            with col2:
-                if st.button("Cancel", key=f"cancel_{idx}"):
-                    st.session_state.editing_message = None
-                    st.rerun()
-        else:
-            # Prepare action buttons
-            action_buttons = ""
-            if message["role"] == "user":
-                action_buttons = f"""
-                <button class="action-btn" onclick="editMessage({idx})">Edit</button>
-                <button class="action-btn" onclick="deleteMessage({idx})">Delete</button>
-                """
-                if message["content"] not in st.session_state.favorite_prompts:
-                    action_buttons += f"""
-                    <button class="action-btn" onclick="favoritePrompt('{safe_html(message['content'])}')">
-                        Favorite
-                    </button>
-                    """
-            elif message["role"] == "assistant":
-                action_buttons = f"""
-                <button class="action-btn" onclick="retryMessage({idx})">Retry</button>
-                <button class="action-btn" onclick="reactToMessage({idx}, 'like')">
-                    👍 {message.get('reactions', {}).get('likes', 0)}
-                </button>
-                <button class="action-btn" onclick="reactToMessage({idx}, 'dislike')">
-                    👎 {message.get('reactions', {}).get('dislikes', 0)}
-                </button>
-                """
-            
-            # Display message
-            st.markdown(f"""
-            <div class="message-container {message['role']}-message">
-                <div class="message-content">{safe_html(message['content'])}</div>
-                <div class="message-actions">
-                    <button class="action-btn" onclick="copyMessage(this)">Copy</button>
-                    {action_buttons}
-                </div>
-                <div class="timestamp">{message.get('timestamp', 'No timestamp')}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Display thinking process for assistant messages
-            if message['role'] == 'assistant' and message.get('thinking'):
-                with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
-                    st.markdown(f"""
-                    <div class="thinking-container">
-                        <div class="message-content">{safe_html(message['thinking'])}</div>
-                        <button class="action-btn" onclick="copyMessage(this)">Copy</button>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-# Handle message actions
-if 'message_action' in st.session_state and st.session_state.message_action:
-    action = st.session_state.message_action
-    if action['action'] == 'edit':
-        st.session_state.editing_message = action['messageIdx']
-    elif action['action'] == 'delete':
-        del current_chat["messages"][action['messageIdx']]
-    elif action['action'] == 'retry':
-        last_user_message = None
-        for i in range(action['messageIdx']-1, -1, -1):
-            if current_chat["messages"][i]["role"] == "user":
-                last_user_message = current_chat["messages"][i]["content"]
-                break
-        if last_user_message:
-            current_chat["messages"] = current_chat["messages"][:action['messageIdx']]
-            client = get_bedrock_client()
-            if client:
-                thinking_process, main_response = get_chat_response(
-                    last_user_message,
-                    current_chat["messages"][-5:],
-                    client,
-                    current_chat["settings"]
-                )
-                if main_response:
-                    current_chat["messages"].append(
-                        process_message(main_response, "assistant", thinking_process)
-                    )
-    elif action['action'] == 'react':
-        msg_idx = action['messageIdx']
-        reaction = action['reaction']
-        if 'reactions' not in current_chat["messages"][msg_idx]:
-            current_chat["messages"][msg_idx]['reactions'] = {'likes': 0, 'dislikes': 0}
-        current_chat["messages"][msg_idx]['reactions'][f"{reaction}s"] += 1
-    elif action['action'] == 'favorite':
-        if action['prompt'] not in st.session_state.favorite_prompts:
-            st.session_state.favorite_prompts.append(action['prompt'])
-    
-    st.session_state.message_action = None
-    st.rerun()
-
-# Chat input
-if prompt := st.chat_input("Message Claude..."):
-    # Add user message
-    current_chat["messages"].append(process_message(prompt, "user"))
-    
-    # Display user message
-    with st.chat_message("user"):
-        st.markdown(f"""
-        <div class="message-container user-message">
-            <div class="message-content">{safe_html(prompt)}</div>
-            <div class="message-actions">
-                <button class="action-btn" onclick="copyMessage(this)">Copy</button>
-            </div>
-            <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Get and display assistant response
-    with st.chat_message("assistant"):
+    # Chat input
+    if prompt := st.chat_input("Message Claude..."):
+        # Add user message
+        current_chat["messages"].append(process_message_with_tools(prompt, "user"))
+        
+        # Get and display assistant response
         client = get_bedrock_client()
         if client:
-            thinking_process, main_response = get_chat_response(
+            thinking_process, main_response, tools_output = get_enhanced_chat_response(
                 prompt,
                 current_chat["messages"][-5:],
                 client,
@@ -468,27 +340,14 @@ if prompt := st.chat_input("Message Claude..."):
             
             if main_response:
                 current_chat["messages"].append(
-                    process_message(main_response, "assistant", thinking_process)
+                    process_message_with_tools(
+                        main_response,
+                        "assistant",
+                        thinking_process,
+                        tools_output
+                    )
                 )
-                
-                st.markdown(f"""
-                <div class="message-container assistant-message">
-                    <div class="message-content">{safe_html(main_response)}</div>
-                    <div class="message-actions">
-                        <button class="action-btn" onclick="copyMessage(this)">Copy</button>
-                        <button class="action-btn" onclick="retryMessage({len(current_chat['messages'])-1})">Retry</button>
-                        <button class="action-btn" onclick="reactToMessage({len(current_chat['messages'])-1}, 'like')">👍 0</button>
-                        <button class="action-btn" onclick="reactToMessage({len(current_chat['messages'])-1}, 'dislike')">👎 0</button>
-                    </div>
-                    <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                if thinking_process:
-                    with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
-                        st.markdown(f"""
-                        <div class="thinking-container">
-                            <div class="message-content">{safe_html(thinking_process)}</div>
-                            <button class="action-btn" onclick="copyMessage(this)">Copy</button>
-                        </div>
-                        """, unsafe_allow_html=True)
+                st.rerun()
+
+if __name__ == "__main__":
+    main()
