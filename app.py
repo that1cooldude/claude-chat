@@ -14,31 +14,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Enhanced UI styling
+# Styling
 st.markdown("""
 <style>
-    /* Message Bubbles */
-    .message-container {
-        margin: 15px 0;
-        padding: 10px;
-        border-radius: 15px;
-        position: relative;
-    }
-    
-    .user-message {
-        background-color: #2e3136;
-        margin-left: 20px;
-        border: 1px solid #404040;
-    }
-    
-    .assistant-message {
-        background-color: #36393f;
-        margin-right: 20px;
-        border: 1px solid #404040;
-    }
-    
-    /* Thinking Process */
-    .thinking-container {
+    .message-container { margin: 15px 0; padding: 10px; border-radius: 15px; }
+    .user-message { background-color: #2e3136; margin-left: 20px; border: 1px solid #404040; }
+    .assistant-message { background-color: #36393f; margin-right: 20px; border: 1px solid #404040; }
+    .thinking-container { 
         background-color: #1e1e2e;
         border-left: 3px solid #ffd700;
         padding: 10px;
@@ -46,71 +28,61 @@ st.markdown("""
         font-style: italic;
         color: #b8b8b8;
     }
-    
-    /* Code Blocks */
-    .stCodeBlock {
-        background-color: #1e1e1e !important;
-        padding: 1em;
-        border-radius: 5px;
-        position: relative;
-    }
-    
-    /* Timestamp */
-    .timestamp {
-        font-size: 0.8em;
-        color: #666;
-        margin-top: 5px;
-        text-align: right;
-    }
-    
-    /* Chat Selection */
-    .chat-selector {
-        margin-bottom: 20px;
-    }
-    
-    /* System Prompt */
-    .system-prompt {
+    .timestamp { font-size: 0.8em; color: #666; text-align: right; }
+    .system-prompt { 
         background-color: #2a2d2e;
         padding: 10px;
         border-radius: 5px;
         margin: 10px 0;
     }
-    
-    /* Mobile Optimization */
+    .chat-stats {
+        font-size: 0.8em;
+        color: #888;
+        margin-top: 5px;
+    }
+    code { padding: 2px 5px; background: #1e1e1e; border-radius: 3px; }
+    .copyable { position: relative; }
+    .copy-button {
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        padding: 3px 6px;
+        background: #404040;
+        border: none;
+        border-radius: 3px;
+        color: white;
+        cursor: pointer;
+    }
     @media (max-width: 768px) {
-        .message-container {
-            margin: 10px 5px;
-        }
-        .stButton>button {
-            width: 100%;
-        }
-        .stTextInput>div>div>input {
-            font-size: 16px;
-        }
+        .message-container { margin: 10px 5px; }
+        .stButton>button { width: 100%; }
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session states
+# Initialize session state
 if "chats" not in st.session_state:
     st.session_state.chats = {
         "Default": {
             "messages": [],
-            "system_prompt": "You are a helpful AI assistant. Always show your reasoning using <thinking></thinking> tags before providing your final response."
+            "system_prompt": "You are a helpful AI assistant. Always show your reasoning using <thinking></thinking> tags before providing your final response.",
+            "settings": {
+                "temperature": 0.7,
+                "max_tokens": 1000
+            },
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
     }
 if "current_chat" not in st.session_state:
     st.session_state.current_chat = "Default"
 if "show_thinking" not in st.session_state:
     st.session_state.show_thinking = True
-if "prompt_cache" not in st.session_state:
-    st.session_state.prompt_cache = {}
 if "total_tokens" not in st.session_state:
     st.session_state.total_tokens = 0
 if "total_cost" not in st.session_state:
     st.session_state.total_cost = 0.0
 
-# Initialize Bedrock client
+# Bedrock client initialization - keeping working inference setup
 @st.cache_resource
 def get_bedrock_client():
     return boto3.client(
@@ -124,91 +96,113 @@ def get_bedrock_client():
 with st.sidebar:
     st.title("Chat Management")
     
-    # Chat Creation
-    cols = st.columns([2, 1])
-    with cols[0]:
-        new_chat_name = st.text_input("New Chat Name")
-    with cols[1]:
+    # Create new chat
+    new_chat_name = st.text_input("New Chat Name")
+    col1, col2 = st.columns([2,1])
+    with col1:
+        template = st.selectbox("Template", ["Default", "Data Scientist", "Code Helper"])
+    with col2:
         if st.button("Create") and new_chat_name:
             if new_chat_name not in st.session_state.chats:
+                template_prompts = {
+                    "Default": "You are a helpful AI assistant. Always show your reasoning using <thinking></thinking> tags.",
+                    "Data Scientist": "You are a data science expert. Show your reasoning with <thinking></thinking> tags. Include code examples with detailed comments.",
+                    "Code Helper": "You are a coding assistant. Break down problems step by step using <thinking></thinking> tags. Provide well-commented code examples."
+                }
                 st.session_state.chats[new_chat_name] = {
                     "messages": [],
-                    "system_prompt": st.session_state.chats[st.session_state.current_chat]["system_prompt"]
+                    "system_prompt": template_prompts[template],
+                    "settings": {
+                        "temperature": 0.7,
+                        "max_tokens": 1000
+                    },
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 st.session_state.current_chat = new_chat_name
                 st.rerun()
     
-    # Chat Selection
-    st.session_state.current_chat = st.selectbox(
+    # Chat selection
+    st.divider()
+    current_chat = st.selectbox(
         "Select Chat",
         options=list(st.session_state.chats.keys()),
         index=list(st.session_state.chats.keys()).index(st.session_state.current_chat)
     )
-    
-    # Delete Chat
-    if len(st.session_state.chats) > 1 and st.button("Delete Current Chat"):
-        del st.session_state.chats[st.session_state.current_chat]
-        st.session_state.current_chat = list(st.session_state.chats.keys())[0]
+    if current_chat != st.session_state.current_chat:
+        st.session_state.current_chat = current_chat
         st.rerun()
     
+    # System prompt
     st.divider()
-    
-    # System Prompt
     st.subheader("System Prompt")
     system_prompt = st.text_area(
-        "Customize System Prompt",
-        value=st.session_state.chats[st.session_state.current_chat]["system_prompt"],
-        help="Define how Claude should behave"
+        "Customize",
+        value=st.session_state.chats[st.session_state.current_chat]["system_prompt"]
     )
-    
-    # Quick System Prompts
-    st.subheader("Quick Prompts")
-    if st.button("Data Scientist"):
-        system_prompt = """You are a data science assistant with expertise in statistics, machine learning, and programming.
-        Always show your reasoning process using <thinking></thinking> tags.
-        When sharing code, include detailed comments and explanations."""
-        st.session_state.chats[st.session_state.current_chat]["system_prompt"] = system_prompt
-        st.rerun()
-    
-    if st.button("Code Helper"):
-        system_prompt = """You are a coding assistant focused on helping with programming tasks.
-        Always show your reasoning using <thinking></thinking> tags.
-        Provide well-commented code examples and step-by-step explanations."""
-        st.session_state.chats[st.session_state.current_chat]["system_prompt"] = system_prompt
-        st.rerun()
-    
     if system_prompt != st.session_state.chats[st.session_state.current_chat]["system_prompt"]:
         st.session_state.chats[st.session_state.current_chat]["system_prompt"] = system_prompt
     
+    # Settings
     st.divider()
-    
-    # UI Settings
     st.subheader("Settings")
-    st.toggle("Show Thinking Process", key="show_thinking")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
-    max_tokens = st.slider("Max Tokens", 100, 4096, 1000)
+    show_thinking = st.toggle("Show Thinking Process", value=st.session_state.show_thinking)
+    if show_thinking != st.session_state.show_thinking:
+        st.session_state.show_thinking = show_thinking
     
-    # Prompt Cache
-    st.subheader("Saved Prompts")
-    with st.expander("Manage Prompts"):
-        for name, saved_prompt in st.session_state.prompt_cache.items():
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.text(f"{name}: {saved_prompt[:50]}...")
-            with col2:
-                if st.button("Use", key=f"use_{name}"):
-                    st.session_state.reuse_prompt = saved_prompt
-                    st.rerun()
+    temperature = st.slider(
+        "Temperature",
+        0.0, 1.0,
+        st.session_state.chats[st.session_state.current_chat]["settings"]["temperature"]
+    )
+    max_tokens = st.slider(
+        "Max Tokens",
+        100, 4096,
+        st.session_state.chats[st.session_state.current_chat]["settings"]["max_tokens"]
+    )
+    
+    # Update settings if changed
+    current_settings = st.session_state.chats[st.session_state.current_chat]["settings"]
+    if temperature != current_settings["temperature"] or max_tokens != current_settings["max_tokens"]:
+        st.session_state.chats[st.session_state.current_chat]["settings"].update({
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        })
+    
+    # Chat management buttons
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Export Chat"):
+            chat = st.session_state.chats[st.session_state.current_chat]
+            export_data = {
+                "chat_name": st.session_state.current_chat,
+                "created_at": chat["created_at"],
+                "system_prompt": chat["system_prompt"],
+                "messages": chat["messages"],
+                "settings": chat["settings"]
+            }
+            st.download_button(
+                "Download JSON",
+                data=json.dumps(export_data, indent=2),
+                file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json"
+            )
+    with col2:
+        if st.button("Clear Chat"):
+            st.session_state.chats[st.session_state.current_chat]["messages"] = []
+            st.rerun()
+    
+    if len(st.session_state.chats) > 1:
+        if st.button("Delete Chat"):
+            del st.session_state.chats[st.session_state.current_chat]
+            st.session_state.current_chat = list(st.session_state.chats.keys())[0]
+            st.rerun()
     
     # Stats
     st.divider()
     st.subheader("Session Stats")
     st.metric("Total Tokens", f"{st.session_state.total_tokens:,}")
     st.metric("Total Cost", f"${st.session_state.total_cost:.4f}")
-    
-    if st.button("Clear Current Chat"):
-        st.session_state.chats[st.session_state.current_chat]["messages"] = []
-        st.rerun()
 
 # Main chat interface
 st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
@@ -216,29 +210,22 @@ st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
 # Display messages
 for idx, message in enumerate(st.session_state.chats[st.session_state.current_chat]["messages"]):
     with st.chat_message(message["role"]):
+        # Message container with timestamp
         st.markdown(f"""
         <div class="message-container {message['role']}-message">
             {message['content']}
-            <div class="timestamp">{message.get('timestamp', datetime.now().strftime('%I:%M %p'))}</div>
+            <div class="timestamp">{message.get('timestamp', 'No timestamp')}</div>
         </div>
         """, unsafe_allow_html=True)
         
+        # Display thinking process if available
         if message['role'] == 'assistant' and 'thinking' in message:
-            with st.expander("View Thinking Process", expanded=st.session_state.show_thinking):
+            with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
                 st.markdown(f"""
                 <div class="thinking-container">
                     {message['thinking']}
                 </div>
                 """, unsafe_allow_html=True)
-
-        # Save prompt option
-        if message['role'] == 'user':
-            with st.expander("Save this prompt"):
-                prompt_name = st.text_input("Name", key=f"save_prompt_{idx}")
-                if st.button("Save", key=f"save_button_{idx}"):
-                    if prompt_name:
-                        st.session_state.prompt_cache[prompt_name] = message['content']
-                        st.success(f"Saved as {prompt_name}")
 
 # Chat input
 if prompt := st.chat_input("Message Claude..."):
@@ -250,6 +237,7 @@ if prompt := st.chat_input("Message Claude..."):
         "timestamp": timestamp
     })
     
+    # Display user message
     with st.chat_message("user"):
         st.markdown(f"""
         <div class="message-container user-message">
@@ -263,29 +251,32 @@ if prompt := st.chat_input("Message Claude..."):
         client = get_bedrock_client()
         try:
             with st.spinner("Thinking..."):
-                # Force thinking tags in prompt
+                # Include system prompt with user message
+                current_chat = st.session_state.chats[st.session_state.current_chat]
                 enhanced_prompt = f"""Please approach this request step by step, showing your reasoning process within <thinking></thinking> tags before providing your final response.
 
 {prompt}
 
 Remember to structure your response with <thinking> tags first, then your final answer."""
 
+                # The working inference setup
                 response = client.invoke_model(
                     modelId="arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
                     contentType="application/json",
                     accept="application/json",
                     body=json.dumps({
                         "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
+                        "max_tokens": current_chat["settings"]["max_tokens"],
+                        "temperature": current_chat["settings"]["temperature"],
                         "messages": [
                             {
-                                "role": "system",
-                                "content": st.session_state.chats[st.session_state.current_chat]["system_prompt"]
-                            },
-                            {
                                 "role": "user",
-                                "content": [{"type": "text", "text": enhanced_prompt}]
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": f"{current_chat['system_prompt']}\n\n{enhanced_prompt}"
+                                    }
+                                ]
                             }
                         ]
                     })
@@ -317,7 +308,7 @@ Remember to structure your response with <thinking> tags first, then your final 
                 """, unsafe_allow_html=True)
                 
                 if thinking_process and st.session_state.show_thinking:
-                    with st.expander("View Thinking Process", expanded=True):
+                    with st.expander("Thinking Process", expanded=True):
                         st.markdown(f"""
                         <div class="thinking-container">
                             {thinking_process}
@@ -326,22 +317,4 @@ Remember to structure your response with <thinking> tags first, then your final 
 
         except Exception as e:
             st.error(f"Error: {str(e)}")
-
-# Export button for current chat
-if st.session_state.chats[st.session_state.current_chat]["messages"]:
-    st.sidebar.divider()
-    if st.sidebar.button("Export Current Chat"):
-        chat_text = f"# Chat Export: {st.session_state.current_chat}\n\n"
-        chat_text += f"System Prompt: {st.session_state.chats[st.session_state.current_chat]['system_prompt']}\n\n"
-        for msg in st.session_state.chats[st.session_state.current_chat]["messages"]:
-            chat_text += f"## {msg['role'].title()} ({msg.get('timestamp', 'N/A')})\n"
-            chat_text += f"{msg['content']}\n\n"
-            if msg['role'] == 'assistant' and 'thinking' in msg:
-                chat_text += f"### Thinking Process\n{msg['thinking']}\n\n"
-        
-        st.sidebar.download_button(
-            "Download Chat",
-            chat_text,
-            file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-            mime="text/markdown"
-        )
+            st.info("If you're seeing an authentication error, please check your AWS credentials.")
