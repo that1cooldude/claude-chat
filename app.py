@@ -4,9 +4,17 @@ import json
 import os
 from datetime import datetime
 import re
+import html
 
 # Page config
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
+
+# Helper function for safe HTML handling
+def safe_html(text: str) -> str:
+    """Safely escape HTML special characters in text."""
+    if not isinstance(text, str):
+        text = str(text)
+    return html.escape(text, quote=True)
 
 # Styling
 st.markdown("""
@@ -190,8 +198,8 @@ for message in messages_to_display:
     with st.chat_message(message["role"]):
         st.markdown(f"""
         <div class="message-container {message['role']}-message">
-            {message['content']}
-            <button class="copy-btn" onclick="copyMessage(this)" data-message="{message['content']}">Copy</button>
+            {safe_html(message['content'])}
+            <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(message['content'])}">Copy</button>
             <div class="timestamp">{message.get('timestamp', 'No timestamp')}</div>
         </div>
         """, unsafe_allow_html=True)
@@ -200,8 +208,8 @@ for message in messages_to_display:
             with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
                 st.markdown(f"""
                 <div class="thinking-container">
-                    {message['thinking']}
-                    <button class="copy-btn" onclick="copyMessage(this)" data-message="{message['thinking']}">Copy</button>
+                    {safe_html(message['thinking'])}
+                    <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(message['thinking'])}">Copy</button>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -211,7 +219,7 @@ if prompt := st.chat_input("Message Claude..."):
     with st.chat_message("user"):
         st.markdown(f"""
         <div class="message-container user-message">
-            {prompt}
+            {safe_html(prompt)}
             <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
         </div>
         """, unsafe_allow_html=True)
@@ -220,9 +228,6 @@ if prompt := st.chat_input("Message Claude..."):
         client = get_bedrock_client()
         try:
             with st.spinner("Thinking..."):
-                # Prepare conversation history with thinking enforcement
-                enhanced_prompt = f"{enforce_thinking_template(prompt)}"
-                
                 conversation_history = []
                 # Add recent message history for context
                 for msg in current_chat["messages"][-5:]:
@@ -234,7 +239,7 @@ if prompt := st.chat_input("Message Claude..."):
                 # Add current prompt with system instructions
                 conversation_history.append({
                     "role": "user",
-                    "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enhanced_prompt}"}]
+                    "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(prompt)}"}]
                 })
                 
                 # Make API call
@@ -261,8 +266,8 @@ if prompt := st.chat_input("Message Claude..."):
                 
                 st.markdown(f"""
                 <div class="message-container assistant-message">
-                    {main_response}
-                    <button class="copy-btn" onclick="copyMessage(this)" data-message="{main_response}">Copy</button>
+                    {safe_html(main_response)}
+                    <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(main_response)}">Copy</button>
                     <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -271,8 +276,8 @@ if prompt := st.chat_input("Message Claude..."):
                     with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
                         st.markdown(f"""
                         <div class="thinking-container">
-                            {thinking_process}
-                            <button class="copy-btn" onclick="copyMessage(this)" data-message="{thinking_process}">Copy</button>
+                            {safe_html(thinking_process)}
+                            <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html(thinking_process)}">Copy</button>
                         </div>
                         """, unsafe_allow_html=True)
 
