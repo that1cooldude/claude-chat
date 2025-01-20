@@ -67,7 +67,7 @@ def invoke_claude(client, prompt, max_tokens=1000, temperature=0.7):
     """Invoke Claude model with exact catalog format"""
     try:
         response = client.invoke_model(
-            modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            modelId="anthropic.claude-3",  # Changed to base model ID
             contentType="application/json",
             accept="application/json",
             body=json.dumps({
@@ -94,7 +94,17 @@ def invoke_claude(client, prompt, max_tokens=1000, temperature=0.7):
         return json.loads(response.get('body').read())
     except Exception as e:
         st.error(f"Error invoking Claude: {str(e)}")
+        if "ValidationException" in str(e):
+            st.info("""
+            Before using this app:
+            1. Go to AWS Console -> Bedrock
+            2. Navigate to Model access
+            3. Enable Claude 3 model access
+            4. Create an inference profile for Claude 3
+            5. Note: You may need to request model access from Anthropic first
+            """)
         raise e
+
 
 def calculate_cost(input_tokens, output_tokens):
     """Calculate cost based on token usage"""
