@@ -10,10 +10,10 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from io import StringIO
 import csv
 
-# Page config
+# Page configuration
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
-# CSS and JavaScript with fixes
+# Custom CSS and JavaScript for UI
 st.markdown("""
 <style>
     .message-container { 
@@ -21,59 +21,39 @@ st.markdown("""
         padding: 15px; 
         border-radius: 10px; 
         position: relative; 
-        border: 1px solid rgba(255,255,255,0.1);
-        transition: box-shadow 0.3s ease;
-    }
-    .message-container:hover {
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        border: 1px solid rgba(255,255,255,0.1); 
     }
     .message-content {
         margin-bottom: 10px;
         white-space: pre-wrap;
-        word-break: break-word;
-        line-height: 1.5;
     }
-    .user-message { 
-        background-color: #2e3136; 
-        margin-left: 20px;
-        border-left: 3px solid #5865F2;
-    }
-    .assistant-message { 
-        background-color: #36393f; 
-        margin-right: 20px;
-        border-left: 3px solid #43B581;
-    }
+    .user-message { background-color: #2e3136; margin-left: 20px; }
+    .assistant-message { background-color: #36393f; margin-right: 20px; }
     .thinking-container { 
         background-color: #1e1e2e; 
         border-left: 3px solid #ffd700; 
-        padding: 15px; 
+        padding: 10px; 
         margin: 10px 0; 
-        font-style: italic;
-        border-radius: 5px;
+        font-style: italic; 
     }
     .timestamp { 
         font-size: 0.8em; 
         color: rgba(255,255,255,0.5); 
         text-align: right; 
-        margin-top: 5px;
+        margin-top: 5px; 
     }
     .message-actions {
         position: absolute;
-        right: 10px;
-        top: 10px;
+        right: 5px;
+        top: 5px;
         opacity: 0;
-        transition: opacity 0.2s ease;
+        transition: all 0.2s ease;
         display: flex;
-        gap: 8px;
-        background: rgba(0,0,0,0.4);
-        padding: 5px;
-        border-radius: 5px;
+        gap: 5px;
     }
-    .message-container:hover .message-actions { 
-        opacity: 1; 
-    }
+    .message-container:hover .message-actions { opacity: 1; }
     .action-btn { 
-        padding: 5px 10px; 
+        padding: 4px 8px; 
         background-color: rgba(255,255,255,0.1);
         border: 1px solid rgba(255,255,255,0.2); 
         border-radius: 4px; 
@@ -82,112 +62,12 @@ st.markdown("""
         cursor: pointer;
         transition: all 0.2s ease;
     }
-    .action-btn:hover { 
-        background-color: rgba(255,255,255,0.2);
-        transform: translateY(-1px);
-    }
-    .reaction-btn.active { 
-        background-color: rgba(50, 205, 50, 0.3); 
-    }
-    .favorite-prompt { 
-        padding: 10px; 
-        margin: 5px 0; 
-        background-color: rgba(255,255,255,0.1); 
-        border-radius: 5px; 
-        cursor: pointer; 
-    }
-    .favorite-prompt:hover { 
-        background-color: rgba(255,255,255,0.2); 
-    }
-    
+    .action-btn:hover { background-color: rgba(255,255,255,0.2); }
     @media (max-width: 768px) {
-        .message-container { 
-            margin: 10px 5px; 
-            padding: 12px;
-        }
-        .message-actions { 
-            opacity: 1;
-            position: relative;
-            right: auto;
-            top: auto;
-            margin-top: 10px;
-            flex-wrap: wrap;
-        }
-        .action-btn {
-            flex: 1;
-            justify-content: center;
-        }
+        .message-container { margin: 10px 5px; }
+        .stButton>button { width: 100%; }
     }
 </style>
-
-<script>
-function copyMessage(element) {
-    const messageContainer = element.closest('.message-container');
-    const messageContent = messageContainer.querySelector('.message-content');
-    const text = messageContent.textContent.trim();
-    
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    
-    textarea.select();
-    try {
-        document.execCommand('copy');
-        element.innerHTML = '✓ Copied!';
-        element.style.backgroundColor = 'rgba(50, 205, 50, 0.3)';
-    } catch (err) {
-        element.innerHTML = '✗ Error!';
-        element.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
-    }
-    
-    document.body.removeChild(textarea);
-    
-    setTimeout(() => {
-        element.innerHTML = '📋 Copy';
-        element.style.backgroundColor = '';
-    }, 2000);
-}
-
-function editMessage(idx) {
-    window.streamlit.setComponentValue({
-        action: 'edit',
-        messageIdx: idx
-    });
-}
-
-function deleteMessage(idx) {
-    if (confirm('Delete this message?')) {
-        window.streamlit.setComponentValue({
-            action: 'delete',
-            messageIdx: idx
-        });
-    }
-}
-
-function retryMessage(idx) {
-    window.streamlit.setComponentValue({
-        action: 'retry',
-        messageIdx: idx
-    });
-}
-
-function reactToMessage(idx, reaction) {
-    window.streamlit.setComponentValue({
-        action: 'react',
-        messageIdx: idx,
-        reaction: reaction
-    });
-}
-
-function favoritePrompt(prompt) {
-    window.streamlit.setComponentValue({
-        action: 'favorite',
-        prompt: prompt
-    });
-}
-</script>
 """, unsafe_allow_html=True)
 
 # Initialize session state
@@ -195,7 +75,7 @@ if "chats" not in st.session_state:
     st.session_state.chats = {
         "Default": {
             "messages": [],
-            "system_prompt": """You MUST structure EVERY response with thinking and final answer sections.""",
+            "system_prompt": "Structure EVERY response with thinking and final answer sections.",
             "settings": {"temperature": 0.7, "max_tokens": 1000},
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -208,27 +88,14 @@ if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 if "editing_message" not in st.session_state:
     st.session_state.editing_message = None
-if "favorite_prompts" not in st.session_state:
-    st.session_state.favorite_prompts = []
 
 def safe_html(text: str) -> str:
-    """Safely escape HTML characters"""
+    """Escape HTML to prevent injection issues."""
     return html.escape(str(text))
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def invoke_bedrock_with_retry(client, **kwargs):
-    """Invoke Bedrock with retry logic"""
-    try:
-        return client.invoke_model(**kwargs)
-    except Exception as e:
-        if "ThrottlingException" in str(e):
-            st.warning("Rate limit reached. Waiting before retry...")
-            time.sleep(2)
-        raise e
 
 @st.cache_resource
 def get_bedrock_client():
-    """Initialize and cache Bedrock client"""
+    """Get a Bedrock client for AWS."""
     try:
         return boto3.client(
             service_name='bedrock-runtime',
@@ -241,67 +108,31 @@ def get_bedrock_client():
         return None
 
 def process_message(message: str, role: str, thinking: str = None) -> dict:
-    """Process and format a message"""
+    """Process message into a structured format."""
     return {
         "role": role,
         "content": message,
         "timestamp": datetime.now().strftime('%I:%M %p'),
-        "reactions": {"likes": 0, "dislikes": 0},
         "thinking": thinking
     }
 
-def get_chat_response(prompt: str, conversation_history: list, client, settings: dict):
-    """Get response from Claude"""
-    try:
-        with st.spinner("Thinking..."):
-            response = invoke_bedrock_with_retry(
-                client,
-                modelId="anthropic.claude-v2",
-                body=json.dumps({
-                    "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
-                    "max_tokens_to_sample": settings["max_tokens"],
-                    "temperature": settings["temperature"],
-                    "anthropic_version": "bedrock-2023-05-31"
-                })
-            )
-            
-            response_body = json.loads(response['body'].read())
-            full_response = response_body['completion']
-            
-            thinking_match = re.search(r'<thinking>(.*?)</thinking>', full_response, re.DOTALL)
-            if thinking_match:
-                thinking = thinking_match.group(1).strip()
-                main_response = re.sub(r'<thinking>.*?</thinking>', '', full_response, flags=re.DOTALL).strip()
-            else:
-                thinking = "Reasoning process not explicitly provided"
-                main_response = full_response
-                
-            return thinking, main_response
-            
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
-        return None, None
-
 def export_chat_to_csv(chat):
-    """Export chat to CSV format"""
+    """Export chat to a CSV format."""
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(['Role', 'Content', 'Thinking Process', 'Timestamp', 'Reactions'])
+    writer.writerow(['Role', 'Content', 'Thinking Process', 'Timestamp'])
     for message in chat["messages"]:
         writer.writerow([
             message["role"],
             message["content"],
             message.get("thinking", ""),
-            message.get("timestamp", ""),
-            json.dumps(message.get("reactions", {}))
+            message.get("timestamp", "")
         ])
     return output.getvalue()
 
 # Sidebar
 with st.sidebar:
     st.title("Chat Settings")
-    
-    # Chat Management
     st.subheader("Chat Management")
     new_chat_name = st.text_input("New Chat Name")
     if st.button("Create Chat") and new_chat_name:
@@ -313,206 +144,19 @@ with st.sidebar:
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             st.session_state.current_chat = new_chat_name
-            st.rerun()
-    
-    st.session_state.current_chat = st.selectbox(
-        "Select Chat", 
-        options=list(st.session_state.chats.keys())
-    )
-    
-    # Model Settings
-    st.subheader("Model Settings")
+            st.experimental_rerun()
+    st.session_state.current_chat = st.selectbox("Select Chat", options=list(st.session_state.chats.keys()))
+
     current_chat = st.session_state.chats[st.session_state.current_chat]
-    current_chat["settings"]["temperature"] = st.slider(
-        "Temperature", 
-        0.0, 1.0, 
-        current_chat["settings"]["temperature"]
-    )
-    current_chat["settings"]["max_tokens"] = st.slider(
-        "Max Tokens", 
-        100, 4096, 
-        current_chat["settings"]["max_tokens"]
-    )
-    
-    # Display Settings
-    st.subheader("Display Settings")
-    st.session_state.show_thinking = st.toggle(
-        "Show Thinking Process", 
-        value=st.session_state.show_thinking
-    )
-    
-    # System Prompt
-    st.subheader("System Prompt")
-    current_chat["system_prompt"] = st.text_area(
-        "System Prompt",
-        value=current_chat["system_prompt"]
-    )
-    
-    # Export Options
-    st.subheader("Export Options")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Export JSON"):
-            st.download_button(
-                "Download JSON",
-                data=json.dumps(current_chat, indent=2),
-                file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-                mime="application/json"
-            )
-    with col2:
-        if st.button("Export CSV"):
-            csv_data = export_chat_to_csv(current_chat)
-            st.download_button(
-                "Download CSV",
-                data=csv_data,
-                file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
-    
-    # Clear Chat
+    current_chat["settings"]["temperature"] = st.slider("Temperature", 0.0, 1.0, current_chat["settings"]["temperature"])
+    current_chat["settings"]["max_tokens"] = st.slider("Max Tokens", 100, 4096, current_chat["settings"]["max_tokens"])
+    st.session_state.show_thinking = st.checkbox("Show Thinking Process", value=st.session_state.show_thinking)
+
     if st.button("Clear Chat"):
-        if st.session_state.current_chat in st.session_state.chats:
-            st.session_state.chats[st.session_state.current_chat]["messages"] = []
-            st.rerun()
+        st.session_state.chats[st.session_state.current_chat]["messages"] = []
+        st.experimental_rerun()
 
-# Main chat interface
+# Main Chat UI
 st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
-
-# Search functionality
-st.session_state.search_query = st.text_input("🔍 Search messages", key="search")
-
-# Display messages
-messages_to_display = current_chat["messages"]
-if st.session_state.search_query:
-    search_term = st.session_state.search_query.lower()
-    messages_to_display = [
-        msg for msg in messages_to_display 
-        if search_term in msg["content"].lower() 
-        or search_term in (msg.get("thinking", "").lower())
-    ]
-
-for idx, message in enumerate(messages_to_display):
-    with st.chat_message(message["role"]):
-        if st.session_state.editing_message == idx and message["role"] == "user":
-            edited_message = st.text_area(
-                "Edit message", 
-                message["content"], 
-                key=f"edit_{idx}"
-            )
-            col1, col2 = st.columns([1,4])
-            with col1:
-                if st.button("Save", key=f"save_{idx}"):
-                    current_chat["messages"][idx]["content"] = edited_message
-                    st.session_state.editing_message = None
-                    st.rerun()
-            with col2:
-                if st.button("Cancel", key=f"cancel_{idx}"):
-                    st.session_state.editing_message = None
-                    st.rerun()
-        else:
-            # Prepare action buttons
-            action_buttons = ""
-            if message["role"] == "user":
-                action_buttons = f"""
-                <button class="action-btn" onclick="editMessage({idx})">✏️ Edit</button>
-                <button class="action-btn" onclick="deleteMessage({idx})">🗑️ Delete</button>
-                """
-                if message["content"] not in st.session_state.favorite_prompts:
-                    action_buttons += f"""
-                    <button class="action-btn" onclick="favoritePrompt('{safe_html(message['content'])}')">
-                        ⭐ Favorite
-                    </button>
-                    """
-            elif message["role"] == "assistant":
-                action_buttons = f"""
-                <button class="action-btn" onclick="retryMessage({idx})">🔄 Retry</button>
-                <button class="action-btn" onclick="reactToMessage({idx}, 'like')">
-                    👍 {message.get('reactions', {}).get('likes', 0)}
-                </button>
-                <button class="action-btn" onclick="reactToMessage({idx}, 'dislike')">
-                    👎 {message.get('reactions', {}).get('dislikes', 0)}
-                </button>
-                """
-            
-            # Display message
-            st.markdown(f"""
-            <div class="message-container {message['role']}-message">
-                <div class="message-content">{safe_html(message['content'])}</div>
-                <div class="message-actions">
-                    <button class="action-btn" onclick="copyMessage(this)">📋 Copy</button>
-                    {action_buttons}
-                </div>
-                <div class="timestamp">{message.get('timestamp', 'No timestamp')}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Display thinking process for assistant messages
-            if message['role'] == 'assistant' and message.get('thinking'):
-                with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
-                    st.markdown(f"""
-                    <div class="thinking-container">
-                        <div class="message-content">{safe_html(message['thinking'])}</div>
-                        <button class="action-btn" onclick="copyMessage(this)">📋 Copy</button>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-# Handle message actions
-if st.session_state.get('message_action'):
-    action = st.session_state.message_action
-    if action['action'] == 'edit':
-        st.session_state.editing_message = action['messageIdx']
-    elif action['action'] == 'delete':
-        del current_chat["messages"][action['messageIdx']]
-    elif action['action'] == 'retry':
-        last_user_message = None
-        for i in range(action['messageIdx']-1, -1, -1):
-            if current_chat["messages"][i]["role"] == "user":
-                last_user_message = current_chat["messages"][i]["content"]
-                break
-        if last_user_message:
-            current_chat["messages"] = current_chat["messages"][:action['messageIdx']]
-            client = get_bedrock_client()
-            if client:
-                thinking_process, main_response = get_chat_response(
-                    last_user_message,
-                    current_chat["messages"][-5:],
-                    client,
-                    current_chat["settings"]
-                )
-                if main_response:
-                    current_chat["messages"].append(
-                        process_message(main_response, "assistant", thinking_process)
-                    )
-    elif action['action'] == 'react':
-        msg_idx = action['messageIdx']
-        reaction = action['reaction']
-        if 'reactions' not in current_chat["messages"][msg_idx]:
-            current_chat["messages"][msg_idx]['reactions'] = {'likes': 0, 'dislikes': 0}
-        current_chat["messages"][msg_idx]['reactions'][f"{reaction}s"] += 1
-    elif action['action'] == 'favorite':
-        if action['prompt'] not in st.session_state.favorite_prompts:
-            st.session_state.favorite_prompts.append(action['prompt'])
-    
-    st.session_state.message_action = None
-    st.rerun()
-
-# Chat input
-if prompt := st.chat_input("Message Claude..."):
-    # Add user message
-    current_chat["messages"].append(process_message(prompt, "user"))
-    
-    # Get and display assistant response
-    client = get_bedrock_client()
-    if client:
-        thinking_process, main_response = get_chat_response(
-            prompt,
-            current_chat["messages"][-5:],
-            client,
-            current_chat["settings"]
-        )
-        
-        if main_response:
-            current_chat["messages"].append(
-                process_message(main_response, "assistant", thinking_process)
-            )
-            st.rerun()
+if st.chat_input("Message Claude..."):
+    pass  # Implement Claude logic here
