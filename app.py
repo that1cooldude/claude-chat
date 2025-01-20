@@ -13,7 +13,7 @@ import csv
 # Page config
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
-# CSS and JavaScript
+# CSS
 st.markdown("""
 <style>
     .message-container {
@@ -112,7 +112,10 @@ st.markdown("""
         background-color: #558ED5;
     }
 </style>
+""", unsafe_allow_html=True)
 
+# JavaScript functions (defined separately for better handling)
+js_functions = """
 <script>
 function copyMessage(element) {
     const messageContainer = element.closest('.message-container');
@@ -153,7 +156,8 @@ function favoritePrompt(prompt) {
     window.streamlitApp.setComponentValue({action: 'favorite', prompt: prompt});
 }
 </script>
-""", unsafe_allow_html=True)
+"""
+st.markdown(js_functions, unsafe_allow_html=True)
 
 # Initialize session state
 if "chats" not in st.session_state:
@@ -219,11 +223,12 @@ def process_message(message: str, role: str, thinking: str = None, tool_calls=No
 def get_chat_response(prompt: str, conversation_history: list, client, settings: dict):
     try:
         with st.spinner("Thinking..."):
+            prompt_with_history = "".join([f"\n\n{msg['role'].capitalize()}: {msg['content']}" for msg in conversation_history])
             response = invoke_bedrock_with_retry(
                 client,
                 modelId="anthropic.claude-v2",
                 body=json.dumps({
-                    "prompt": f"{''.join([f'\\n\\n{msg['role'].capitalize()}: {msg['content']}' for msg in conversation_history])}\\n\\nHuman: {prompt}\n\nAssistant:",
+                    "prompt": f"{prompt_with_history}\n\nHuman: {prompt}\n\nAssistant:",
                     "max_tokens_to_sample": settings["max_tokens"],
                     "temperature": settings["temperature"],
                     "anthropic_version": "bedrock-2023-05-31"
