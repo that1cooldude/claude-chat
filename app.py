@@ -10,134 +10,195 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from io import StringIO
 import csv
 
-# Page configuration
-st.set_page_config(
-    page_title="Claude Chat",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Page config
+st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
-# Improved CSS for better UI
+# CSS and JavaScript
 st.markdown("""
 <style>
-    /* Message Container */
-    .message-container {
-        margin: 15px 0;
-        padding: 15px;
-        border-radius: 10px;
-        position: relative;
-        border: 1px solid rgba(255,255,255,0.1);
+    .message-container { 
+        margin: 15px 0; 
+        padding: 15px; 
+        border-radius: 10px; 
+        position: relative; 
+        border: 1px solid rgba(255,255,255,0.1); 
     }
-    .user-message {
-        background-color: #2e3136;
-        margin-left: 20px;
-        border-left: 3px solid #4CAF50;
-    }
-    .assistant-message {
-        background-color: #36393f;
-        margin-right: 20px;
-        border-left: 3px solid #2196F3;
-    }
-    
-    /* Message Content */
     .message-content {
         margin-bottom: 10px;
         white-space: pre-wrap;
-        word-break: break-word;
     }
-    
-    /* Copy Button */
-    .copy-button {
+    .user-message { background-color: #2e3136; margin-left: 20px; }
+    .assistant-message { background-color: #36393f; margin-right: 20px; }
+    .thinking-container { 
+        background-color: #1e1e2e; 
+        border-left: 3px solid #ffd700; 
+        padding: 10px; 
+        margin: 10px 0; 
+        font-style: italic; 
+    }
+    .timestamp { 
+        font-size: 0.8em; 
+        color: rgba(255,255,255,0.5); 
+        text-align: right; 
+        margin-top: 5px; 
+    }
+    .message-actions {
         position: absolute;
-        top: 5px;
         right: 5px;
-        padding: 5px 10px;
-        background: rgba(255,255,255,0.1);
-        border: none;
-        border-radius: 4px;
-        color: white;
+        top: 5px;
+        opacity: 0;
+        transition: all 0.2s ease;
+        display: flex;
+        gap: 5px;
+    }
+    .message-container:hover .message-actions { opacity: 1; }
+    .action-btn { 
+        padding: 4px 8px; 
+        background-color: rgba(255,255,255,0.1);
+        border: 1px solid rgba(255,255,255,0.2); 
+        border-radius: 4px; 
+        color: #fff; 
+        font-size: 12px; 
         cursor: pointer;
-        font-size: 12px;
-        transition: all 0.3s ease;
+        transition: all 0.2s ease;
     }
-    .copy-button:hover {
-        background: rgba(255,255,255,0.2);
+    .action-btn:hover { background-color: rgba(255,255,255,0.2); }
+    .reaction-btn.active { background-color: rgba(50, 205, 50, 0.3); }
+    .favorite-prompt { 
+        padding: 10px; 
+        margin: 5px 0; 
+        background-color: rgba(255,255,255,0.1); 
+        border-radius: 5px; 
+        cursor: pointer; 
     }
-    .copy-button.copied {
-        background: #4CAF50;
+    .favorite-prompt:hover { background-color: rgba(255,255,255,0.2); }
+    .edit-area { 
+        margin-top: 10px; 
+        background-color: rgba(0,0,0,0.2); 
+        padding: 10px; 
+        border-radius: 5px; 
     }
-    
-    /* Timestamps and Additional UI Elements */
-    .timestamp {
-        font-size: 0.8em;
-        color: rgba(255,255,255,0.5);
-        position: absolute;
-        bottom: 5px;
-        right: 10px;
-    }
-    .thinking-container {
-        background-color: #1e1e2e;
-        border-left: 3px solid #ffd700;
-        padding: 10px;
-        margin: 10px 0;
-        font-style: italic;
-    }
-    
-    /* Mobile Responsiveness */
     @media (max-width: 768px) {
-        .message-container {
-            margin: 10px 5px;
-            padding: 10px;
-        }
-        .copy-button {
+        .message-container { margin: 10px 5px; }
+        .message-actions { 
             opacity: 1;
-            position: static;
+            position: relative;
+            right: auto;
+            top: auto;
             margin-top: 10px;
-            width: 100%;
         }
+        .stButton>button { width: 100%; }
     }
 </style>
 
 <script>
-// Improved copy functionality with proper error handling
-function copyMessage(messageId) {
-    const messageElement = document.getElementById(messageId);
-    const textToCopy = messageElement.innerText;
-    const buttonElement = messageElement.parentElement.querySelector('.copy-button');
-    
-    navigator.clipboard.writeText(textToCopy)
-        .then(() => {
-            buttonElement.textContent = '✓ Copied!';
-            buttonElement.classList.add('copied');
+function copyMessage(element) {
+    try {
+        const messageContainer = element.closest('.message-container');
+        const messageContent = messageContainer.querySelector('.message-content');
+        const text = messageContent.textContent.trim();
+        
+        navigator.clipboard.writeText(text).then(() => {
+            element.innerText = 'Copied!';
+            element.style.backgroundColor = 'rgba(50, 205, 50, 0.3)';
             setTimeout(() => {
-                buttonElement.textContent = 'Copy';
-                buttonElement.classList.remove('copied');
+                element.innerText = 'Copy';
+                element.style.backgroundColor = '';
             }, 2000);
-        })
-        .catch(err => {
-            console.error('Failed to copy:', err);
-            buttonElement.textContent = '✗ Error';
-            setTimeout(() => {
-                buttonElement.textContent = 'Copy';
-            }, 2000);
+        }).catch((err) => {
+            console.error('Copy failed:', err);
+            element.innerText = 'Error!';
+            setTimeout(() => element.innerText = 'Copy', 2000);
         });
+    } catch (err) {
+        console.error('Copy error:', err);
+        element.innerText = 'Error!';
+        setTimeout(() => element.innerText = 'Copy', 2000);
+    }
+}
+
+function editMessage(idx) {
+    try {
+        window.streamlitApp.setComponentValue({action: 'edit', messageIdx: idx});
+    } catch (err) {
+        console.error('Edit error:', err);
+    }
+}
+
+function deleteMessage(idx) {
+    try {
+        if (confirm('Delete this message?')) {
+            window.streamlitApp.setComponentValue({action: 'delete', messageIdx: idx});
+        }
+    } catch (err) {
+        console.error('Delete error:', err);
+    }
+}
+
+function retryMessage(idx) {
+    try {
+        window.streamlitApp.setComponentValue({action: 'retry', messageIdx: idx});
+    } catch (err) {
+        console.error('Retry error:', err);
+    }
+}
+
+function reactToMessage(idx, reaction) {
+    try {
+        window.streamlitApp.setComponentValue({action: 'react', messageIdx: idx, reaction: reaction});
+    } catch (err) {
+        console.error('React error:', err);
+    }
+}
+
+function favoritePrompt(prompt) {
+    try {
+        window.streamlitApp.setComponentValue({action: 'favorite', prompt: prompt});
+    } catch (err) {
+        console.error('Favorite error:', err);
+    }
 }
 </script>
 """, unsafe_allow_html=True)
 
 # Initialize session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "settings" not in st.session_state:
-    st.session_state.settings = {
-        "temperature": 0.7,
-        "max_tokens": 1000
+if "chats" not in st.session_state:
+    st.session_state.chats = {
+        "Default": {
+            "messages": [],
+            "system_prompt": """You MUST structure EVERY response with thinking and final answer sections.""",
+            "settings": {"temperature": 0.7, "max_tokens": 1000},
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
     }
+if "current_chat" not in st.session_state:
+    st.session_state.current_chat = "Default"
+if "show_thinking" not in st.session_state:
+    st.session_state.show_thinking = True
+if "search_query" not in st.session_state:
+    st.session_state.search_query = ""
+if "editing_message" not in st.session_state:
+    st.session_state.editing_message = None
+if "message_action" not in st.session_state:
+    st.session_state.message_action = None
+if "favorite_prompts" not in st.session_state:
+    st.session_state.favorite_prompts = []
+if "reactions" not in st.session_state:
+    st.session_state.reactions = {}
 
-# Bedrock client setup
+def safe_html(text: str) -> str:
+    return html.escape(str(text))
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def invoke_bedrock_with_retry(client, **kwargs):
+    try:
+        return client.invoke_model(**kwargs)
+    except Exception as e:
+        if "ThrottlingException" in str(e):
+            st.warning("Rate limit reached. Waiting before retry...")
+            time.sleep(2)
+        raise e
+
 @st.cache_resource
 def get_bedrock_client():
     try:
@@ -151,12 +212,20 @@ def get_bedrock_client():
         st.error(f"Failed to initialize Bedrock client: {str(e)}")
         return None
 
-# Message processing with retry
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def process_message(message: str, role: str, thinking: str = None) -> dict:
+    return {
+        "role": role,
+        "content": message,
+        "timestamp": datetime.now().strftime('%I:%M %p'),
+        "reactions": {"likes": 0, "dislikes": 0},
+        "thinking": thinking
+    }
+
 def get_chat_response(prompt: str, conversation_history: list, client, settings: dict):
     try:
         with st.spinner("Thinking..."):
-            response = client.invoke_model(
+            response = invoke_bedrock_with_retry(
+                client,
                 modelId="anthropic.claude-v2",
                 body=json.dumps({
                     "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
@@ -167,180 +236,241 @@ def get_chat_response(prompt: str, conversation_history: list, client, settings:
             )
             
             response_body = json.loads(response['body'].read())
-            return response_body['completion'].strip()
+            full_response = response_body['completion']
+            
+            thinking_match = re.search(r'<thinking>(.*?)</thinking>', full_response, re.DOTALL)
+            if thinking_match:
+                thinking = thinking_match.group(1).strip()
+                main_response = re.sub(r'<thinking>.*?</thinking>', '', full_response, flags=re.DOTALL).strip()
+            else:
+                thinking = "Reasoning process not explicitly provided"
+                main_response = full_response
+                
+            return thinking, main_response
+            
     except Exception as e:
-        st.error(f"Error getting response: {str(e)}")
-        return None
+        st.error(f"Error: {str(e)}")
+        return None, None
 
-# Sidebar for settings
+# Sidebar
 with st.sidebar:
     st.title("Chat Settings")
-    st.session_state.settings["temperature"] = st.slider(
-        "Temperature",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.7,
-        step=0.1
-    )
-    st.session_state.settings["max_tokens"] = st.slider(
-        "Max Tokens",
-        min_value=100,
-        max_value=4000,
-        value=1000,
-        step=100
+    
+    # Chat Management
+    st.subheader("Chat Management")
+    new_chat_name = st.text_input("New Chat Name")
+    if st.button("Create Chat") and new_chat_name:
+        if new_chat_name not in st.session_state.chats:
+            st.session_state.chats[new_chat_name] = {
+                "messages": [],
+                "system_prompt": st.session_state.chats[st.session_state.current_chat]["system_prompt"],
+                "settings": {"temperature": 0.7, "max_tokens": 1000},
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            st.session_state.current_chat = new_chat_name
+            st.rerun()
+    
+    st.session_state.current_chat = st.selectbox(
+        "Select Chat", 
+        options=list(st.session_state.chats.keys())
     )
     
-    if st.button("Clear Chat History"):
-        st.session_state.messages = []
-        st.session_state.chat_history = []
-        st.rerun()
-
-# Main chat interface
-st.title("🤖 Claude Chat")
-
-# Display chat messages
-for idx, message in enumerate(st.session_state.messages):
-    message_id = f"message_{idx}"
-    with st.chat_message(message["role"]):
-        st.markdown(f"""
-            <div class="message-container {message['role']}-message">
-                <div class="message-content" id="{message_id}">{html.escape(message['content'])}</div>
-                <button class="copy-button" onclick="copyMessage('{message_id}')">Copy</button>
-                <div class="timestamp">{message.get('timestamp', datetime.now().strftime('%I:%M %p'))}</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-# Chat input and response handling
-if prompt := st.chat_input("Message Claude..."):
-    # Add user message
-    st.session_state.messages.append({
-        "role": "user",
-        "content": prompt,
-        "timestamp": datetime.now().strftime('%I:%M %p')
-    })
+    # Model Settings
+    st.subheader("Model Settings")
+    current_chat = st.session_state.chats[st.session_state.current_chat]
+    current_chat["settings"]["temperature"] = st.slider(
+        "Temperature", 
+        0.0, 1.0, 
+        current_chat["settings"]["temperature"]
+    )
+    current_chat["settings"]["max_tokens"] = st.slider(
+        "Max Tokens", 
+        100, 4096, 
+        current_chat["settings"]["max_tokens"]
+    )
     
-    # Get and display assistant response
-    client = get_bedrock_client()
-    if client:
-        response = get_chat_response(
-            prompt,
-            st.session_state.            st.session_state.chat_history[-5:],
-            client,
-            st.session_state.settings
-        )
-        
-        if response:
-            # Add assistant response
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": response,
-                "timestamp": datetime.now().strftime('%I:%M %p')
-            })
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": response,
-                "timestamp": datetime.now().strftime('%I:%M %p')
-            })
+    # Display Settings
+    st.subheader("Display Settings")
+    st.session_state.show_thinking = st.toggle(
+        "Show Thinking Process", 
+        value=st.session_state.show_thinking
+    )
+    
+    # System Prompt
+    st.subheader("System Prompt")
+    current_chat["system_prompt"] = st.text_area(
+        "System Prompt",
+        value=current_chat["system_prompt"]
+    )
+    
+    # Export Options
+    st.subheader("Export Options")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Export JSON"):
+            st.download_button(
+                "Download JSON",
+                data=json.dumps(current_chat, indent=2),
+                file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json"
+            )
+    with col2:
+        if st.button("Export CSV"):
+            csv_data = StringIO()
+            writer = csv.writer(csv_data)
+            writer.writerow(['Role', 'Content', 'Thinking', 'Timestamp', 'Reactions'])
+            for message in current_chat["messages"]:
+                writer.writerow([
+                    message.get("role", ""),
+                    message.get("content", ""),
+                    message.get("thinking", ""),
+                    message.get("timestamp", ""),
+                    json.dumps(message.get("reactions", {}))
+                ])
+            st.download_button(
+                "Download CSV",
+                data=csv_data.getvalue(),
+                file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+    
+    # Clear Chat
+    if st.button("Clear Chat"):
+        if st.session_state.current_chat in st.session_state.chats:
+            st.session_state.chats[st.session_state.current_chat]["messages"] = []
             st.rerun()
 
-# Export functionality
-def export_chat():
-    chat_data = {
-        "messages": st.session_state.messages,
-        "settings": st.session_state.settings,
-        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
-    
-    # JSON export
-    json_str = json.dumps(chat_data, indent=2)
-    st.download_button(
-        label="Download Chat (JSON)",
-        data=json_str,
-        file_name=f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-        mime="application/json"
-    )
-    
-    # CSV export
-    csv_data = StringIO()
-    csv_writer = csv.writer(csv_data)
-    csv_writer.writerow(['Role', 'Content', 'Timestamp'])
-    
-    for message in st.session_state.messages:
-        csv_writer.writerow([
-            message['role'],
-            message['content'],
-            message['timestamp']
-        ])
-    
-    st.download_button(
-        label="Download Chat (CSV)",
-        data=csv_data.getvalue(),
-        file_name=f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv"
-    )
+# Main chat interface
+st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
 
-# Add export buttons to sidebar
-with st.sidebar:
-    st.markdown("---")
-    st.subheader("Export Chat")
-    export_chat()
+# Search functionality
+st.session_state.search_query = st.text_input("🔍 Search messages")
 
-# Error handling
-def handle_error(error_message: str):
-    st.error(f"Error: {error_message}")
-    with st.expander("Error Details"):
-        st.code(str(error_message))
+try:
+    # Display messages
+    messages_to_display = current_chat["messages"]
+    if st.session_state.search_query:
+        search_term = st.session_state.search_query.lower()
+        messages_to_display = [
+            msg for msg in messages_to_display 
+            if search_term in msg["content"].lower() 
+            or search_term in (msg.get("thinking", "").lower())
+        ]
 
-# Optional: Add keyboard shortcuts
-st.markdown("""
-<script>
-document.addEventListener('keydown', function(e) {
-    // Ctrl/Cmd + Enter to send message
-    if ((e.ctrlKey || e.metaKey) && e.keyCode === 13) {
-        document.querySelector('.stButton button').click();
-    }
-});
-</script>
-""", unsafe_allow_html=True)
+    for idx, message in enumerate(messages_to_display):
+        with st.chat_message(message["role"]):
+            if st.session_state.editing_message == idx and message["role"] == "user":
+                edited_message = st.text_area(
+                    "Edit message", 
+                    message["content"], 
+                    key=f"edit_{idx}"
+                )
+                col1, col2 = st.columns([1,4])
+                with col1:
+                    if st.button("Save", key=f"save_{idx}"):
+                        current_chat["messages"][idx]["content"] = edited_message
+                        st.session_state.editing_message = None
+                        st.rerun()
+                with col2:
+                    if st.button("Cancel", key=f"cancel_{idx}"):
+                        st.session_state.editing_message = None
+                        st.rerun()
+            else:
+                message_id = f"message_{idx}"
+                st.markdown(f"""
+                <div class="message-container {message['role']}-message">
+                    <div class="message-content" id="{message_id}">{safe_html(message['content'])}</div>
+                    <div class="message-actions">
+                        <button class="action-btn" onclick="copyMessage(this)">Copy</button>
+                        {'''
+                        <button class="action-btn" onclick="editMessage({idx})">Edit</button>
+                        <button class="action-btn" onclick="deleteMessage({idx})">Delete</button>
+                        ''' if message['role'] == 'user' else '''
+                        <button class="action-btn" onclick="retryMessage({idx})">Retry</button>
+                        <button class="action-btn" onclick="reactToMessage({idx}, 'like')">
+                            👍 {message.get('reactions', {}).get('likes', 0)}
+                        </button>
+                        <button class="action-btn" onclick="reactToMessage({idx}, 'dislike')">
+                            👎 {message.get('reactions', {}).get('dislikes', 0)}
+                        </button>
+                        '''}
+                    </div>
+                    <div class="timestamp">{message.get('timestamp', 'No timestamp')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if message['role'] == 'assistant' and message.get('thinking'):
+                    with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
+                        st.markdown(f"""
+                        <div class="thinking-container">
+                            <div class="message-content">{safe_html(message['thinking'])}</div>
+                            <button class="action-btn" onclick="copyMessage(this)">Copy</button>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-# Optional: Add system status
-with st.sidebar:
-    st.markdown("---")
-    st.subheader("System Status")
-    if client:
-        st.success("Connected to Claude")
-    else:
-        st.error("Not connected to Claude")
-    
-    st.markdown(f"Messages: {len(st.session_state.messages)}")
-    st.markdown(f"Temperature: {st.session_state.settings['temperature']}")
-    st.markdown(f"Max Tokens: {st.session_state.settings['max_tokens']}")
+except Exception as e:
+    st.error(f"Error displaying messages: {str(e)}")
 
-# Optional: Add message search
-search_query = st.sidebar.text_input("Search messages...")
-if search_query:
-    filtered_messages = [
-        msg for msg in st.session_state.messages
-        if search_query.lower() in msg['content'].lower()
-    ]
-    st.sidebar.markdown(f"Found {len(filtered_messages)} matches")
-    for msg in filtered_messages:
-        st.sidebar.markdown(f"""
-        **{msg['role']}** ({msg['timestamp']}):
-        >{msg['content'][:100]}...
-        """)
+# Handle message actions
+if 'message_action' in st.session_state and st.session_state.message_action:
+    try:
+        action = st.session_state.message_action
+        if action['action'] == 'edit':
+            st.session_state.editing_message = action['messageIdx']
+        elif action['action'] == 'delete':
+            del current_chat["messages"][action['messageIdx']]
+        elif action['action'] == 'retry':
+            last_user_message = None
+            for i in range(action['messageIdx']-1, -1, -1):
+                if current_chat["messages"][i]["role"] == "user":
+                    last_user_message = current_chat["messages"][i]["content"]
+                    break
+            if last_user_message:
+                current_chat["messages"] = current_chat["messages"][:action['messageIdx']]
+                client = get_bedrock_client()
+                if client:
+                    thinking_process, main_response = get_chat_response(
+                        last_user_message,
+                        current_chat["messages"][-5:],
+                        client,
+                        current_chat["settings"]
+                    )
+                    if main_response:
+                        current_chat["messages"].append(
+                            process_message(main_response, "assistant", thinking_process)
+                        )
+        elif action['action'] == 'react':
+            msg_idx = action['messageIdx']
+            reaction = action['reaction']
+            if 'reactions' not in current_chat["messages"][msg_idx]:
+                current_chat["messages"][msg_idx]['reactions'] = {'likes': 0, 'dislikes': 0}
+            current_chat["messages"][msg_idx]['reactions'][f"{reaction}s"] += 1
+        
+        st.session_state.message_action = None
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error handling message action: {str(e)}")
 
-# Add welcome message if chat is empty
-if not st.session_state.messages:
-    st.markdown("""
-    👋 Welcome to Claude Chat! 
-    
-    Start by typing a message below. You can:
-    - Use Ctrl/Cmd + Enter to send messages
-    - Search through messages using the sidebar
-    - Export your chat history as JSON or CSV
-    - Adjust temperature and max tokens in settings
-    
-    Happy chatting! 🚀
-    """)
-
+# Chat input
+if prompt := st.chat_input("Message Claude..."):
+    try:
+        # Add user message
+        current_chat["messages"].append(process_message(prompt, "user"))
+        
+        # Get and display assistant response
+        client = get_bedrock_client()
+        if client:
+            thinking_process, main_response = get_chat_response(
+                prompt,
+                current_chat["messages"][-5:],
+                client,
+                current_chat["settings"]
+            )
+            
+            if main_response:
+                current_chat["messages"].append(
+                    process_message(main_response, "assistant", thinking_process)
+                )
+                st.rerun()
+    except Exception as e:
+        st.error(f"Error processing message: {str(e)}")
