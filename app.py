@@ -5,9 +5,15 @@ import os
 from datetime import datetime
 import re
 import html
+import time
+from tenacity import retry, stop_after_attempt, wait_exponential
+from perplexity import Perplexity
 
 # Page config
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
+
+# Initialize Perplexity client
+perplexity_client = Perplexity(api_key=st.secrets["perplexity"]["PERPLEXITY_API_KEY"])
 
 # Helper function for safe HTML handling
 def safe_html(text: str) -> str:
@@ -15,6 +21,18 @@ def safe_html(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
     return html.escape(text, quote=True)
+
+# Retry decorator for API calls
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def invoke_bedrock_with_retry(client, **kwargs):
+    """Invoke Bedrock with exponential backoff retry logic."""
+    try:
+        return client.invoke_model(**kwargs)
+    except Exception as e:
+        if "ThrottlingException" in str(e):
+            st.warning("Rate limit reached. Waiting before retry...")
+            time.sleep(2)
+        raise e
 
 # Styling
 st.markdown("""
@@ -83,11 +101,12 @@ if "search_query" not in st.session_state:
 if "use_search" not in st.session_state:
     st.session_state.use_search = True
 
-def perform_search(query: str) -> str:
-    """Execute Perplexity search and return results."""
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=4))
+def perform_perplexity_search(query: str) -> str:
+    """Execute Perplexity search with retry logic."""
     try:
-        search_result = search_via_perplexity(keyword=query)
-        return search_result
+        response = perplexity_client.search(query)
+        return response.answer
     except Exception as e:
         st.error(f"Search error: {str(e)}")
         return None
@@ -102,9 +121,9 @@ def enhance_prompt_with_search(prompt: str) -> str:
     
     if any(trigger in prompt.lower() for trigger in search_triggers):
         with st.spinner("Searching for current information..."):
-            search_results = perform_search(prompt)
+            search_results = perform_perplexity_search(prompt)
             if search_results:
-                return f"""Here is some current information to help with the response:
+                return f"""Here is some current information from Perplexity:
 {search_results}
 
 Original question: {prompt}
@@ -118,15 +137,13 @@ def validate_thinking_process(response: str) -> tuple[str, str]:
     thinking_match = re.search(thinking_pattern, response, re.DOTALL)
     
     if not thinking_match:
-        # If no thinking tags found, enforce them by making it explicit
         return ("I need to show my reasoning explicitly:\n1. Analyzing the response\n2. Breaking it down\n3. Providing structure",
                 "Let me revise my response with proper thinking tags next time:\n\n" + response)
     
     thinking = thinking_match.group(1).strip()
     main_response = re.sub(thinking_pattern, '', response, flags=re.DOTALL).strip()
     
-    # Additional validation
-    if len(thinking) < 10:  # Arbitrary minimum length for thinking section
+    if len(thinking) < 10:
         thinking = "I should provide more detailed reasoning:\n" + thinking
     
     return thinking, main_response
@@ -153,9 +170,9 @@ def get_bedrock_client():
     """Initialize and return Bedrock client."""
     return boto3.client(
         service_name='bedrock-runtime',
-        region_name=st.secrets["AWS_DEFAULT_REGION"],
-        aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
+        region_name=st.secrets["aws"]["AWS_DEFAULT_REGION"],
+        aws_access_key_id=st.secrets["aws"]["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=st.secrets["aws"]["AWS_SECRET_ACCESS_KEY"]
     )
 
 def process_message(message: str, role: str, thinking: str = None) -> dict:
@@ -286,8 +303,9 @@ if prompt := st.chat_input("Message Claude..."):
                     "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(enhanced_prompt)}"}]
                 })
                 
-                # Make API call
-                response = client.invoke_model(
+                # Make API call with retry logic
+                response = invoke_bedrock_with_retry(
+                    client,
                     modelId="arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
                     contentType="application/json",
                     accept="application/json",
