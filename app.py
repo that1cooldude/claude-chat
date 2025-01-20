@@ -15,16 +15,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS
+# CSS with fixed copy functionality
 st.markdown("""
 <style>
-    /* Chat container */
     .chat-container {
         max-width: 800px;
         margin: 0 auto;
     }
     
-    /* Message styling */
     .message-container {
         padding: 1rem;
         margin: 1rem 0;
@@ -49,19 +47,12 @@ st.markdown("""
         margin-right: 100px;
     }
     
-    /* Button styling */
     .message-actions {
         position: absolute;
         right: 1rem;
         top: 1rem;
         display: flex;
         gap: 0.5rem;
-        opacity: 0;
-        transition: opacity 0.2s;
-    }
-    
-    .message-container:hover .message-actions {
-        opacity: 1;
     }
     
     .action-button {
@@ -72,14 +63,17 @@ st.markdown("""
         border-radius: 0.25rem;
         cursor: pointer;
         font-size: 0.8rem;
-        transition: background-color 0.2s;
+        transition: all 0.2s;
     }
     
     .action-button:hover {
         background-color: rgba(255, 255, 255, 0.2);
     }
     
-    /* Timestamp */
+    .action-button.copied {
+        background-color: #4CAF50;
+    }
+    
     .timestamp {
         font-size: 0.8rem;
         color: rgba(255, 255, 255, 0.5);
@@ -87,7 +81,6 @@ st.markdown("""
         margin-top: 0.5rem;
     }
     
-    /* Thinking process */
     .thinking-container {
         background-color: rgba(30, 30, 46, 0.5);
         border-left: 3px solid #ffd700;
@@ -96,7 +89,6 @@ st.markdown("""
         font-style: italic;
     }
     
-    /* Mobile optimization */
     @media (max-width: 768px) {
         .message-actions {
             position: relative;
@@ -110,46 +102,53 @@ st.markdown("""
         }
     }
     
-    /* Hide Streamlit branding */
     #MainMenu, footer, header {display: none;}
     .stDeployButton {display: none;}
 </style>
 
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    // Message action handlers
-    window.copyMessage = function(element) {
-        const container = element.closest('.message-container');
-        const content = container.querySelector('.message-content').textContent;
-        navigator.clipboard.writeText(content).then(() => {
-            element.textContent = 'Copied!';
-            setTimeout(() => element.textContent = 'Copy', 2000);
-        });
-    };
+function copyMessage(element, messageId) {
+    const container = document.querySelector(`#message-${messageId}`);
+    const content = container.querySelector('.message-content').textContent;
     
-    window.editMessage = function(messageId) {
+    navigator.clipboard.writeText(content).then(() => {
+        element.textContent = 'Copied!';
+        element.classList.add('copied');
+        setTimeout(() => {
+            element.textContent = 'Copy';
+            element.classList.remove('copied');
+        }, 2000);
+    }).catch(err => {
+        console.error('Failed to copy:', err);
+        element.textContent = 'Error!';
+        setTimeout(() => {
+            element.textContent = 'Copy';
+        }, 2000);
+    });
+}
+
+function editMessage(messageId) {
+    window.streamlit.setComponentValue({
+        type: 'edit_message',
+        messageId: messageId
+    });
+}
+
+function deleteMessage(messageId) {
+    if (confirm('Delete this message?')) {
         window.streamlit.setComponentValue({
-            type: 'edit_message',
+            type: 'delete_message',
             messageId: messageId
         });
-    };
-    
-    window.deleteMessage = function(messageId) {
-        if (confirm('Delete this message?')) {
-            window.streamlit.setComponentValue({
-                type: 'delete_message',
-                messageId: messageId
-            });
-        }
-    };
-    
-    window.retryMessage = function(messageId) {
-        window.streamlit.setComponentValue({
-            type: 'retry_message',
-            messageId: messageId
-        });
-    };
-});
+    }
+}
+
+function retryMessage(messageId) {
+    window.streamlit.setComponentValue({
+        type: 'retry_message',
+        messageId: messageId
+    });
+}
 </script>
 """, unsafe_allow_html=True)
 
@@ -163,21 +162,18 @@ if 'max_tokens' not in st.session_state:
 if 'show_thinking' not in st.session_state:
     st.session_state.show_thinking = True
 
-# AWS Bedrock client setup
+# AWS Bedrock client setup - ORIGINAL VERSION
 @st.cache_resource
 def get_bedrock_client():
     try:
         return boto3.client(
             service_name='bedrock-runtime',
-            region_name=st.secrets["AWS_DEFAULT_REGION"],
-            aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
+            region_name='us-east-2'
         )
     except Exception as e:
         st.error(f"Failed to initialize Bedrock client: {str(e)}")
         return None
 
-# Helper functions
 def safe_html(text):
     """Escape HTML special characters"""
     return (str(text)
@@ -208,7 +204,6 @@ def get_ai_response(prompt: str, temperature: float, max_tokens: int) -> tuple[s
         response_body = json.loads(response['body'].read())
         full_response = response_body['completion']
         
-        # Extract thinking process and main response
         thinking = ""
         main_response = full_response
         
@@ -259,8 +254,7 @@ with st.sidebar:
         min_value=0.0,
         max_value=1.0,
         value=st.session_state.temperature,
-        step=0.1,
-        help="Higher values make the output more random"
+        step=0.1
     )
     
     st.session_state.max_tokens = st.slider(
@@ -268,14 +262,12 @@ with st.sidebar:
         min_value=100,
         max_value=4000,
         value=st.session_state.max_tokens,
-        step=100,
-        help="Maximum length of the response"
+        step=100
     )
     
     st.session_state.show_thinking = st.toggle(
         "Show Thinking Process",
-        value=st.session_state.show_thinking,
-        help="Show AI's reasoning process"
+        value=st.session_state.show_thinking
     )
     
     if st.button("Clear Chat"):
@@ -285,7 +277,7 @@ with st.sidebar:
     if st.button("Export Chat"):
         csv_data = export_chat()
         st.download_button(
-            label="Download CSV",
+            label="Download Chat",
             data=csv_data,
             file_name=f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv"
@@ -298,10 +290,10 @@ st.title("💭 AI Chat Assistant")
 for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(f"""
-        <div class="message-container {message['role']}-message">
+        <div class="message-container {message['role']}-message" id="message-{idx}">
             <div class="message-content">{safe_html(message['content'])}</div>
             <div class="message-actions">
-                <button class="action-button" onclick="copyMessage(this)">Copy</button>
+                <button class="action-button" onclick="copyMessage(this, {idx})">Copy</button>
                 {"<button class='action-button' onclick='editMessage(" + str(idx) + ")'>Edit</button>" if message['role'] == 'user' else ""}
                 {"<button class='action-button' onclick='deleteMessage(" + str(idx) + ")'>Delete</button>" if message['role'] == 'user' else ""}
                 {"<button class='action-button' onclick='retryMessage(" + str(idx) + ")'>Retry</button>" if message['role'] == 'assistant' else ""}
@@ -320,10 +312,8 @@ for idx, message in enumerate(st.session_state.messages):
 
 # Chat input
 if prompt := st.chat_input("Message the AI..."):
-    # Add user message
     add_message('user', prompt)
     
-    # Get AI response
     with st.spinner("AI is thinking..."):
         thinking, response = get_ai_response(
             prompt,
@@ -340,7 +330,6 @@ if prompt := st.chat_input("Message the AI..."):
 # Handle message actions
 for event in st.session_state.get("_stcore_message_events", []):
     if event.get("type") == "edit_message":
-        # Handle edit
         message_id = event["messageId"]
         new_content = st.text_input("Edit message", st.session_state.messages[message_id]["content"])
         if st.button("Save"):
@@ -348,21 +337,16 @@ for event in st.session_state.get("_stcore_message_events", []):
             st.rerun()
     
     elif event.get("type") == "delete_message":
-        # Handle delete
         message_id = event["messageId"]
         st.session_state.messages.pop(message_id)
         st.rerun()
     
     elif event.get("type") == "retry_message":
-        # Handle retry
         message_id = event["messageId"]
-        # Find the last user message before this one
         for i in range(message_id - 1, -1, -1):
             if st.session_state.messages[i]["role"] == "user":
                 prompt = st.session_state.messages[i]["content"]
-                # Remove messages after the user message
                 st.session_state.messages = st.session_state.messages[:message_id]
-                # Get new AI response
                 thinking, response = get_ai_response(
                     prompt,
                     st.session_state.temperature,
