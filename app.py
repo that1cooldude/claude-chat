@@ -2,6 +2,7 @@ import streamlit as st
 import boto3
 import json
 import os
+import re
 from datetime import datetime
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -14,7 +15,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Clean, professional CSS with better mobile support
+# ----------------------------------------------------------------------------------
+# Basic CSS for improved mobile UI
+# ----------------------------------------------------------------------------------
 st.markdown("""
 <style>
     .stChat message {
@@ -37,6 +40,14 @@ st.markdown("""
             margin: 0 !important;
         }
     }
+    .thinking-container {
+        background-color: #1e1e2e; 
+        border-left: 3px solid #ffd700; 
+        padding: 10px; 
+        margin-top: 10px; 
+        font-style: italic;
+        border-radius: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -50,7 +61,11 @@ def init_session_state():
         st.session_state.chats = {
             "Default": {
                 "messages": [],
-                "settings": {"temperature": 0.7, "max_tokens": 1000},
+                "settings": {
+                    "temperature": 0.7,
+                    "max_tokens": 1000,
+                    "system_prompt": "Please include your chain-of-thought inside <thinking>...</thinking>."
+                },
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
         }
@@ -58,6 +73,8 @@ def init_session_state():
         st.session_state.current_chat = "Default"
     if "editing_message" not in st.session_state:
         st.session_state.editing_message = None
+    if "show_thinking" not in st.session_state:
+        st.session_state.show_thinking = False  # default off
     
     # Ensure the current_chat key actually exists
     if st.session_state.current_chat not in st.session_state.chats:
@@ -65,7 +82,11 @@ def init_session_state():
         if "Default" not in st.session_state.chats:
             st.session_state.chats["Default"] = {
                 "messages": [],
-                "settings": {"temperature": 0.7, "max_tokens": 1000},
+                "settings": {
+                    "temperature": 0.7,
+                    "max_tokens": 1000,
+                    "system_prompt": "Please include your chain-of-thought inside <thinking>...</thinking>."
+                },
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
 
@@ -89,15 +110,29 @@ def get_bedrock_client():
         st.error(f"Failed to initialize Bedrock client: {str(e)}")
         return None
 
-def build_bedrock_messages(conversation):
+def build_bedrock_messages(conversation, system_prompt):
     """
     Convert the entire conversation (list of dicts) into
     the JSON structure required by Claude on Bedrock.
+    We also insert a system message at the start (Claude's instructions).
     """
     bedrock_msgs = []
+
+    # 1) Insert system message from user-defined system prompt
+    bedrock_msgs.append({
+        "role": "system",
+        "content": [
+            {
+                "type": "text",
+                "text": system_prompt
+            }
+        ]
+    })
+
+    # 2) Then add the user+assistant messages from conversation
     for msg in conversation:
         bedrock_msgs.append({
-            "role": msg["role"],  
+            "role": msg["role"],
             "content": [
                 {
                     "type": "text",
@@ -110,11 +145,14 @@ def build_bedrock_messages(conversation):
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=6))
 def get_chat_response(client, conversation, settings):
     """
-    Get response from Claude, using the entire conversation for multi-turn context.
+    Get response from Claude, using entire conversation for multi-turn context.
+    Attempt to parse out <thinking> tags if present.
     """
     try:
         with st.spinner("Claude is thinking..."):
-            payload_messages = build_bedrock_messages(conversation)
+            # Build the entire conversation
+            system_prompt = settings.get("system_prompt", "")
+            payload_messages = build_bedrock_messages(conversation, system_prompt)
 
             response = client.invoke_model(
                 modelId=(
@@ -135,51 +173,60 @@ def get_chat_response(client, conversation, settings):
             
             response_body = json.loads(response.get('body').read())
             if 'content' in response_body:
+                # Combine all returned text segments
                 collected_text = []
                 for item in response_body['content']:
                     if item.get('type') == 'text':
                         collected_text.append(item['text'])
                 final_answer = "\n".join(collected_text).strip()
-                return final_answer or "No response generated. Please try again."
+                
+                # Attempt to extract <thinking> content
+                thinking_match = re.search(r"<thinking>(.*?)</thinking>", final_answer, re.DOTALL)
+                if thinking_match:
+                    extracted_thinking = thinking_match.group(1).strip()
+                    # Remove the thinking portion from the final visible text
+                    visible_text = re.sub(r"<thinking>.*?</thinking>", "", final_answer, flags=re.DOTALL).strip()
+                else:
+                    extracted_thinking = None
+                    visible_text = final_answer
+
+                return visible_text, extracted_thinking or ""
             else:
-                return "No response content found in Claude's answer."
+                return "No response content found in Claude's answer.", ""
+
     except Exception as e:
         st.error(f"Error calling Claude: {str(e)}")
-        return None
+        return None, None
 
 # ----------------------------------------------------------------------------------
 # Helper Functions
 # ----------------------------------------------------------------------------------
 
-def process_message(message: str, role: str) -> dict:
-    """Wrap message text along with a timestamp and role."""
+def process_message(message: str, role: str, thinking: str = "") -> dict:
+    """
+    Wrap message text, thinking text, timestamp, and role.
+    'thinking' is optional, only used for assistant messages.
+    """
     return {
         "role": role,
         "content": message,
+        "thinking": thinking,
         "timestamp": datetime.now().strftime('%I:%M %p')
     }
 
 def approximate_tokens(text: str) -> int:
-    """
-    Approximate token usage by splitting on whitespace.
-    This is naive but won't break anything.
-    """
-    # If you need a more precise method, you'll have to integrate a real tokenizer.
+    """Roughly count tokens by splitting on whitespace."""
     return len(text.split())
 
 def total_token_usage(conversation) -> int:
-    """
-    Sum approximate tokens for all messages in the conversation.
-    """
+    """Sum approximate tokens for all messages (excluding thinking)."""
     total = 0
     for msg in conversation:
         total += approximate_tokens(msg["content"])
     return total
 
 def save_chat_to_folder(chat_name, chat_data):
-    """
-    Saves a chat (conversation) to a 'conversations' folder in JSON format.
-    """
+    """Save entire chat to 'conversations' folder in JSON format."""
     os.makedirs("conversations", exist_ok=True)
     file_path = os.path.join("conversations", f"{chat_name}.json")
     with open(file_path, "w", encoding="utf-8") as f:
@@ -187,10 +234,7 @@ def save_chat_to_folder(chat_name, chat_data):
     st.success(f"Conversation '{chat_name}' saved to {file_path}.")
 
 def load_chat_from_folder(chat_name):
-    """
-    Loads a chat from `conversations/{chat_name}.json`, if it exists.
-    Returns None if the file is not found.
-    """
+    """Load chat from folder if file exists, else return None."""
     file_path = os.path.join("conversations", f"{chat_name}.json")
     if not os.path.isfile(file_path):
         return None
@@ -212,13 +256,16 @@ with st.sidebar:
             if new_chat_name and new_chat_name not in st.session_state.chats:
                 st.session_state.chats[new_chat_name] = {
                     "messages": [],
-                    "settings": {"temperature": 0.7, "max_tokens": 1000},
+                    "settings": {
+                        "temperature": 0.7,
+                        "max_tokens": 1000,
+                        "system_prompt": "Please include your chain-of-thought inside <thinking>...</thinking>."
+                    },
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 st.session_state.current_chat = new_chat_name
                 st.rerun()
 
-        # Select existing conversation
         st.session_state.current_chat = st.selectbox(
             "Select Chat",
             options=list(st.session_state.chats.keys()),
@@ -227,26 +274,39 @@ with st.sidebar:
             else 0,
             key="chat_selector"
         )
-        
-        # Model Settings
-        st.subheader("Model Settings")
+
         current_chat = st.session_state.chats[st.session_state.current_chat]
 
+        # Model Settings
+        st.subheader("Model Settings")
         current_chat["settings"]["temperature"] = st.slider(
             "Temperature",
             0.0, 1.0,
             current_chat["settings"].get("temperature", 0.7),
             help="Higher = more creative / explorative. Lower = more focused / deterministic."
         )
-        
         current_chat["settings"]["max_tokens"] = st.slider(
             "Max Tokens",
             100, 4096,
             current_chat["settings"].get("max_tokens", 1000),
             help="Maximum length of Claude's responses."
         )
+        # System Prompt
+        st.subheader("System Prompt")
+        current_chat["settings"]["system_prompt"] = st.text_area(
+            "Claude will see this prompt before every conversation exchange, so you can shape behavior or style.",
+            value=current_chat["settings"].get("system_prompt", ""),
+        )
 
-        # Display approximate token usage
+        # Show Thinking Toggle
+        st.subheader("Thinking Process")
+        st.session_state.show_thinking = st.checkbox(
+            "Show Thinking",
+            value=st.session_state.show_thinking,
+            help="Display any <thinking> content parsed from Claude's response"
+        )
+
+        # Token Usage
         st.subheader("Approx. Token Usage")
         total_tokens = total_token_usage(current_chat["messages"])
         st.write(f"Total Conversation Tokens: **{total_tokens}**")
@@ -255,7 +315,6 @@ with st.sidebar:
         st.subheader("Internet Search")
         perplex_query = st.text_input("Search Query", key="perplex_query")
         if st.button("Search Perplexity"):
-            # Show clickable link to open Perplexity in a new tab
             if perplex_query.strip():
                 encoded_query = perplex_query.strip().replace(" ", "+")
                 perplex_url = f"https://www.perplexity.ai/search?q={encoded_query}"
@@ -265,14 +324,13 @@ with st.sidebar:
                 )
             else:
                 st.warning("Please enter a search query.")
-        
-        # Save and Load
+
+        # Save / Load
         st.subheader("Storage")
         col_save, col_load = st.columns(2)
         with col_save:
             if st.button("Save Chat"):
                 save_chat_to_folder(st.session_state.current_chat, current_chat)
-
         with col_load:
             if st.button("Load Chat"):
                 loaded = load_chat_from_folder(st.session_state.current_chat)
@@ -283,7 +341,7 @@ with st.sidebar:
                 else:
                     st.warning(f"No saved file found for '{st.session_state.current_chat}'.")
 
-        # Clear Chat with confirmation
+        # Clear Chat
         st.subheader("Clear Conversation")
         if st.button("Clear Current Chat"):
             if len(current_chat["messages"]) > 0:
@@ -308,8 +366,8 @@ try:
     # Display existing messages
     for idx, message in enumerate(current_chat["messages"]):
         with st.chat_message(message["role"]):
-            if st.session_state.editing_message == idx and message["role"] == "user":
-                # If user is editing a message, show text_area
+            if (message["role"] == "user") and (st.session_state.editing_message == idx):
+                # Edit mode for user message
                 edited_message = st.text_area(
                     "Edit your message",
                     message["content"],
@@ -330,6 +388,15 @@ try:
                 st.markdown(message["content"])
                 st.caption(f"Time: {message['timestamp']}")
 
+                # If assistant has a thinking chunk and user wants to show it
+                if message["role"] == "assistant" and message.get("thinking") and st.session_state.show_thinking:
+                    with st.expander("Thinking Process"):
+                        st.markdown(f"""
+                        <div class="thinking-container">
+                            {message["thinking"]}
+                        </div>
+                        """, unsafe_allow_html=True)
+
                 # For user messages, show Edit / Delete
                 if message["role"] == "user":
                     c1, c2, _ = st.columns([1,1,8])
@@ -345,21 +412,25 @@ try:
     # Chat input
     prompt = st.chat_input("Message Claude...", key="chat_input")
     if prompt:
-        # Add user's new message to conversation
-        current_chat["messages"].append(process_message(prompt, "user"))
+        # 1) Add user's new message to conversation
+        current_chat["messages"].append(
+            process_message(prompt, "user")
+        )
 
-        # Get Claude response using entire conversation
+        # 2) Get Claude response using entire conversation
         client = get_bedrock_client()
         if client:
-            response = get_chat_response(
+            visible_answer, thinking_text = get_chat_response(
                 client=client,
                 conversation=current_chat["messages"],
                 settings=current_chat["settings"]
             )
-            if response:
+            if visible_answer is not None:
+                # 3) Append assistant message
                 current_chat["messages"].append(
-                    process_message(response, "assistant")
+                    process_message(visible_answer, "assistant", thinking=thinking_text)
                 )
+
         st.experimental_rerun()
 
 except Exception as e:
