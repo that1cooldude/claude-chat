@@ -151,11 +151,12 @@ with st.sidebar:
     model = st.selectbox(
         "Model",
         [
-            "claude-3-sonnet-20240122-v1:0",
-            "claude-3-haiku-20240122-v1:0"
+            "claude-3-5-sonnet-20241022-v2:0",  # Updated model ID
+            "claude-3-5-haiku-20241022-v1:0"    # Updated model ID
         ],
         format_func=lambda x: "Claude 3.5 Sonnet" if "sonnet" in x else "Claude 3.5 Haiku"
     )
+
     
     # Parameters
     temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
