@@ -7,13 +7,9 @@ import re
 import html
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
-from perplexity import Perplexity
 
 # Page config
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
-
-# Initialize Perplexity client
-perplexity_client = Perplexity(api_key=st.secrets["PERPLEXITY_API_KEY"])
 
 # Helper function for safe HTML handling
 def safe_html(text: str) -> str:
@@ -47,7 +43,6 @@ st.markdown("""
                 border-radius: 3px; color: white; cursor: pointer; opacity: 0; transition: opacity 0.3s; }
     .message-container:hover .copy-btn { opacity: 1; }
     .search-highlight { background-color: #ffd70066; padding: 0 2px; border-radius: 2px; }
-    .search-results { background-color: #2a2d2e; padding: 10px; border-radius: 5px; margin: 10px 0; }
     @media (max-width: 768px) { 
         .message-container { margin: 10px 5px; }
         .stButton>button { width: 100%; }
@@ -99,37 +94,6 @@ if "show_thinking" not in st.session_state:
     st.session_state.show_thinking = True
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
-if "use_search" not in st.session_state:
-    st.session_state.use_search = True
-
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=4))
-def perform_perplexity_search(query: str) -> str:
-    """Execute Perplexity search with retry logic."""
-    try:
-        response = perplexity_client.search(query)
-        return response.answer
-    except Exception as e:
-        st.error(f"Search error: {str(e)}")
-        return None
-
-def enhance_prompt_with_search(prompt: str) -> str:
-    """Add search results to prompt if needed and allowed."""
-    if not st.session_state.use_search:
-        return prompt
-        
-    search_triggers = ['current', 'latest', 'news', 'recent', 'today', 'now', 'update']
-    
-    if any(trigger in prompt.lower() for trigger in search_triggers):
-        with st.spinner("Searching for current information..."):
-            search_results = perform_perplexity_search(prompt)
-            if search_results:
-                return f"""Here is some current information from Perplexity:
-{search_results}
-
-Original question: {prompt}
-
-Please incorporate this information into your response if relevant."""
-    return prompt
 
 def validate_thinking_process(response: str) -> tuple[str, str]:
     """Validate and extract thinking process and main response."""
@@ -221,7 +185,6 @@ with st.sidebar:
     temperature = st.slider("Temperature", 0.0, 1.0, current_chat["settings"]["temperature"])
     max_tokens = st.slider("Max Tokens", 100, 4096, current_chat["settings"]["max_tokens"])
     st.session_state.show_thinking = st.toggle("Show Thinking Process", value=st.session_state.show_thinking)
-    st.session_state.use_search = st.toggle("Enable Internet Search", value=st.session_state.use_search)
     
     current_chat["settings"].update({"temperature": temperature, "max_tokens": max_tokens})
     
@@ -292,9 +255,6 @@ if prompt := st.chat_input("Message Claude..."):
         if client:
             try:
                 with st.spinner("Thinking..."):
-                    # First, enhance prompt with search results if needed
-                    enhanced_prompt = enhance_prompt_with_search(prompt)
-                    
                     conversation_history = []
                     # Add recent message history for context
                     for msg in current_chat["messages"][-5:]:
@@ -306,7 +266,7 @@ if prompt := st.chat_input("Message Claude..."):
                     # Add current prompt with system instructions and thinking enforcement
                     conversation_history.append({
                         "role": "user",
-                        "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(enhanced_prompt)}"}]
+                        "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(prompt)}"}]
                     })
                     
                     # Make API call with retry logic
