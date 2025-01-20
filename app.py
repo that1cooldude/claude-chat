@@ -6,7 +6,7 @@ import re
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# Page config
+# Configuration and page setup
 st.set_page_config(
     page_title="Claude Chat",
     page_icon="🤖",
@@ -14,24 +14,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Clean, professional CSS
+# CSS - Streamlit best practices for styling
 st.markdown("""
 <style>
-    .message-container {
-        margin: 15px 0;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-    .user-message { 
-        background-color: #2e3136; 
-        margin-left: 20px;
-        border-left: 3px solid #5865F2;
-    }
-    .assistant-message { 
-        background-color: #36393f; 
-        margin-right: 20px;
-        border-left: 3px solid #43B581;
+    .stChat message {
+        background-color: #2e3136 !important;
+        border-radius: 10px !important;
+        padding: 15px !important;
+        margin: 5px 0 !important;
     }
     .thinking-container {
         background-color: #1e1e2e;
@@ -47,46 +37,54 @@ st.markdown("""
         text-align: right;
         margin-top: 5px;
     }
-    .control-button {
-        background-color: transparent;
-        border: 1px solid rgba(255,255,255,0.2);
-        color: white;
-        padding: 3px 8px;
-        border-radius: 4px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-    }
-    .control-button:hover {
-        background-color: rgba(255,255,255,0.1);
-    }
+    /* Mobile Optimization */
     @media (max-width: 768px) {
-        .message-container { 
-            margin: 10px 5px; 
-            padding: 12px;
+        .stButton button {
+            width: 100%;
+            margin: 2px 0;
         }
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
-if "chats" not in st.session_state:
-    st.session_state.chats = {
-        "Default": {
-            "messages": [],
-            "settings": {"temperature": 0.7, "max_tokens": 1000},
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# Initialize session state - Streamlit recommended pattern
+def init_session_state():
+    if "chats" not in st.session_state:
+        st.session_state.chats = {
+            "Default": {
+                "messages": [],
+                "settings": {"temperature": 0.7, "max_tokens": 1000},
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
         }
-    }
-if "current_chat" not in st.session_state:
-    st.session_state.current_chat = "Default"
-if "editing_message" not in st.session_state:
-    st.session_state.editing_message = None
-if "show_thinking" not in st.session_state:
-    st.session_state.show_thinking = True
+    if "current_chat" not in st.session_state:
+        st.session_state.current_chat = "Default"
+    if "editing_message" not in st.session_state:
+        st.session_state.editing_message = None
+    if "show_thinking" not in st.session_state:
+        st.session_state.show_thinking = True
 
+init_session_state()
+
+# Cached resource for AWS client - Streamlit recommended pattern
+@st.cache_resource
+def get_bedrock_client():
+    """Initialize Bedrock client with proper error handling"""
+    try:
+        return boto3.client(
+            service_name='bedrock-runtime',
+            region_name=st.secrets["AWS_DEFAULT_REGION"],
+            aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
+        )
+    except Exception as e:
+        st.error(f"Failed to initialize Bedrock client: {str(e)}")
+        return None
+
+# API call with retry logic
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=6))
-def get_chat_response(prompt: str, conversation_history: list, client, settings: dict):
-    """Get response from Claude with thinking process"""
+def get_claude_response(prompt: str, client, settings: dict):
+    """Get response from Claude with proper error handling"""
     try:
         with st.spinner("Thinking..."):
             response = client.invoke_model(
@@ -116,37 +114,36 @@ def get_chat_response(prompt: str, conversation_history: list, client, settings:
         st.error(f"Error calling Claude: {str(e)}")
         return None, None
 
-@st.cache_resource
-def get_bedrock_client():
-    """Initialize Bedrock client"""
-    try:
-        return boto3.client(
-            service_name='bedrock-runtime',
-            region_name=st.secrets["AWS_DEFAULT_REGION"],
-            aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
-        )
-    except Exception as e:
-        st.error(f"Failed to initialize Bedrock client: {str(e)}")
-        return None
-
-def process_message(message: str, role: str, thinking: str = None) -> dict:
-    """Format message with metadata"""
+def process_message(content: str, role: str, thinking: str = None) -> dict:
+    """Process and format a message with metadata"""
     return {
         "role": role,
-        "content": message,
+        "content": content,
         "timestamp": datetime.now().strftime('%I:%M %p'),
         "thinking": thinking
     }
 
-# Sidebar
+def display_message_controls(idx: int, message: dict, current_chat: dict):
+    """Display message control buttons using Streamlit components"""
+    if message["role"] == "user":
+        cols = st.columns([1, 1, 10])
+        with cols[0]:
+            if st.button("✏️", key=f"edit_btn_{idx}", help="Edit message"):
+                st.session_state.editing_message = idx
+                st.rerun()
+        with cols[1]:
+            if st.button("🗑️", key=f"delete_btn_{idx}", help="Delete message"):
+                current_chat["messages"].pop(idx)
+                st.rerun()
+
+# Sidebar components
 with st.sidebar:
     st.title("Chat Settings")
     
     # Chat Management
     st.subheader("Conversations")
-    new_chat_name = st.text_input("New Chat Name")
-    if st.button("Create Chat") and new_chat_name:
+    new_chat_name = st.text_input("New Chat Name", key="new_chat_input")
+    if st.button("Create Chat", key="create_chat_btn") and new_chat_name:
         if new_chat_name not in st.session_state.chats:
             st.session_state.chats[new_chat_name] = {
                 "messages": [],
@@ -156,27 +153,33 @@ with st.sidebar:
             st.session_state.current_chat = new_chat_name
             st.rerun()
     
+    # Chat Selection
     st.session_state.current_chat = st.selectbox(
-        "Select Chat", 
-        options=list(st.session_state.chats.keys())
+        "Select Chat",
+        options=list(st.session_state.chats.keys()),
+        key="chat_selector"
     )
     
     # Model Settings
-    st.subheader("Model Settings")
     current_chat = st.session_state.chats[st.session_state.current_chat]
+    st.subheader("Model Settings")
+    
     current_chat["settings"]["temperature"] = st.slider(
-        "Temperature", 
+        "Temperature",
         min_value=0.0,
         max_value=1.0,
         value=current_chat["settings"]["temperature"],
-        help="Higher values make responses more creative, lower values make them more focused"
+        help="Higher values make responses more creative",
+        key="temperature_slider"
     )
+    
     current_chat["settings"]["max_tokens"] = st.slider(
-        "Max Tokens", 
+        "Max Tokens",
         min_value=100,
         max_value=4096,
         value=current_chat["settings"]["max_tokens"],
-        help="Maximum length of the response"
+        help="Maximum length of the response",
+        key="max_tokens_slider"
     )
     
     # Display Settings
@@ -184,12 +187,12 @@ with st.sidebar:
     st.session_state.show_thinking = st.toggle(
         "Show Thinking Process",
         value=st.session_state.show_thinking,
-        help="Show or hide Claude's reasoning process"
+        help="Show or hide Claude's reasoning process",
+        key="thinking_toggle"
     )
     
-    # Chat Management
-    st.subheader("Chat Management")
-    if st.button("Clear Current Chat", help="Delete all messages in current chat"):
+    # Clear Chat Button
+    if st.button("Clear Current Chat", key="clear_chat_btn"):
         if st.session_state.current_chat in st.session_state.chats:
             st.session_state.chats[st.session_state.current_chat]["messages"] = []
             st.rerun()
@@ -200,39 +203,30 @@ st.title(f"Claude Chat - {st.session_state.current_chat}")
 # Message display
 for idx, message in enumerate(current_chat["messages"]):
     with st.chat_message(message["role"]):
+        # Handle message editing
         if st.session_state.editing_message == idx and message["role"] == "user":
-            # Edit mode
             edited_message = st.text_area(
                 "Edit message",
                 message["content"],
-                key=f"edit_{idx}"
+                key=f"edit_area_{idx}"
             )
-            col1, col2 = st.columns([1,4])
-            with col1:
-                if st.button("Save", key=f"save_{idx}"):
+            cols = st.columns([1, 1])
+            with cols[0]:
+                if st.button("Save", key=f"save_btn_{idx}"):
                     current_chat["messages"][idx]["content"] = edited_message
                     st.session_state.editing_message = None
                     st.rerun()
-            with col2:
-                if st.button("Cancel", key=f"cancel_{idx}"):
+            with cols[1]:
+                if st.button("Cancel", key=f"cancel_btn_{idx}"):
                     st.session_state.editing_message = None
                     st.rerun()
         else:
-            # Normal message display
+            # Display message content
             st.markdown(message["content"])
             st.caption(f"Time: {message['timestamp']}")
             
-            # Message controls for user messages
-            if message["role"] == "user":
-                col1, col2 = st.columns([1,20])
-                with col1:
-                    if st.button("✏️", key=f"edit_{idx}", help="Edit message"):
-                        st.session_state.editing_message = idx
-                        st.rerun()
-                with col1:
-                    if st.button("🗑️", key=f"delete_{idx}", help="Delete message"):
-                        current_chat["messages"].pop(idx)
-                        st.rerun()
+            # Display message controls
+            display_message_controls(idx, message, current_chat)
             
             # Display thinking process for assistant messages
             if message["role"] == "assistant" and message.get("thinking"):
@@ -245,19 +239,14 @@ for idx, message in enumerate(current_chat["messages"]):
                         """, unsafe_allow_html=True)
 
 # Chat input
-if prompt := st.chat_input("Message Claude..."):
+if prompt := st.chat_input("Message Claude...", key="chat_input"):
     # Add user message
     current_chat["messages"].append(process_message(prompt, "user"))
     
     # Get Claude response
     client = get_bedrock_client()
     if client:
-        response = get_chat_response(
-            prompt,
-            current_chat["messages"][-5:],
-            client,
-            current_chat["settings"]
-        )
+        response = get_claude_response(prompt, client, current_chat["settings"])
         
         if response:
             thinking, main_response = response
