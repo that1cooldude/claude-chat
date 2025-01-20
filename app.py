@@ -116,7 +116,7 @@ def get_bedrock_client():
 
 # Utility functions
 def calculate_cost(input_tokens, output_tokens, model):
-    if "sonnet" in model:
+    if "sonnet" in model.lower():
         return (input_tokens / 1_000_000 * 15) + (output_tokens / 1_000_000 * 75)
     else:  # haiku
         return (input_tokens / 1_000_000 * 5) + (output_tokens / 1_000_000 * 25)
@@ -143,18 +143,27 @@ def format_message(content):
 # Main interface
 st.title("🤖 Enhanced Claude Chat")
 
+# Debug expander in sidebar
+with st.sidebar:
+    with st.expander("Debug Info"):
+        st.write({
+            "AWS Region": "us-east-2",
+            "Bedrock Access": "Checking...",
+            "Available Models": "..."
+        })
+
 # Sidebar
 with st.sidebar:
     st.header("Settings")
     
-    # Model selection with correct IDs
+    # Model selection with LATEST IDs
     model = st.selectbox(
         "Model",
         [
-            "claude-3-sonnet-20241022-v1",  # Removed :0 suffix
-            "claude-3-haiku-20241022-v1"    # Removed :0 suffix
+            "anthropic.claude-3-haiku-20240307-v1:0",   # Latest Haiku
+            "anthropic.claude-3-sonnet-20240229-v1:0"   # Latest Sonnet
         ],
-        format_func=lambda x: "Claude 3.5 Sonnet" if "sonnet" in x else "Claude 3.5 Haiku"
+        format_func=lambda x: x.split('anthropic.')[-1].split('-v')[0].replace('-', ' ').title()
     )
     
     # Parameters
@@ -246,7 +255,7 @@ if prompt := st.chat_input("Your message here..."):
                             {"role": "user", "content": prompt}
                         ]
                     }),
-                    modelId=f"anthropic.{model}",
+                    modelId=model,  # Using full model ID
                     accept="application/json",
                     contentType="application/json"
                 )
@@ -285,8 +294,17 @@ if prompt := st.chat_input("Your message here..."):
                 })
                 
             except Exception as e:
-                st.error(f"Error: {str(e)}")
-                st.info("Check the AWS Console to verify your model access and IDs.")
+                st.error(f"Error Details: {str(e)}")
+                if "ValidationException" in str(e):
+                    st.info("""
+                    Troubleshooting steps:
+                    1. Check AWS Console -> Bedrock -> Model access
+                    2. Verify model ID matches exactly
+                    3. Ensure region is correct (us-east-2)
+                    4. Confirm model access is enabled
+                    
+                    Note: Model IDs change frequently. Verify the correct ID in your AWS Console.
+                    """)
 
 # Session info
 with st.expander("Session Information"):
