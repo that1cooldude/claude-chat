@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit as st 
 import boto3
 import json
 import os
@@ -8,155 +8,60 @@ import html
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# Page config
-st.set_page_config(
-    page_title="Claude Chat",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'Get Help': 'https://github.com/your-repo',
-        'Report a bug': "https://github.com/your-repo/issues",
-        'About': "# Claude Chat\nA Streamlit-based chat interface for Claude 3.5"
-    }
-)
+st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
-# Helper functions for HTML handling
-def safe_html(text: str) -> str:
-    """Standard HTML escaping for display."""
-    if not isinstance(text, str):
-        text = str(text)
-    return html.escape(text)
-
-def safe_html_with_quotes(text: str) -> str:
-    """Special HTML escaping for data attributes, preserving quotes."""
-    if not isinstance(text, str):
-        text = str(text)
-    return text.replace('"', '&quot;').replace("'", "&#x27;")
-
-# Styling with improved copy button visibility
 st.markdown("""
 <style>
-    /* Message Containers */
-    .message-container {
-        margin: 15px 0;
-        padding: 15px;
-        border-radius: 10px;
-        position: relative;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    .user-message {
-        background-color: #2e3136;
-        margin-left: 20px;
-    }
-    .assistant-message {
-        background-color: #36393f;
-        margin-right: 20px;
-    }
-    .thinking-container {
-        background-color: #1e1e2e;
-        border-left: 3px solid #ffd700;
-        padding: 10px;
-        margin: 10px 0;
-        font-style: italic;
-    }
-    
-    /* Copy Button */
-    .copy-btn {
-        position: absolute;
-        top: 5px;
-        right: 5px;
-        padding: 4px 8px;
-        background-color: rgba(255, 255, 255, 0.1);
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        border-radius: 4px;
-        color: #ffffff;
-        font-size: 12px;
-        cursor: pointer;
-        opacity: 0;
-        transition: all 0.2s ease;
-    }
-    .message-container:hover .copy-btn {
-        opacity: 1;
-    }
-    .copy-btn:hover {
-        background-color: rgba(255, 255, 255, 0.2);
-        border-color: rgba(255, 255, 255, 0.3);
-    }
-    
-    /* Timestamps and UI Elements */
-    .timestamp {
-        font-size: 0.8em;
-        color: rgba(255, 255, 255, 0.5);
-        text-align: right;
-        margin-top: 5px;
-    }
-    .search-highlight {
-        background-color: rgba(255, 215, 0, 0.2);
-        padding: 0 2px;
-        border-radius: 2px;
-    }
-    
-    /* Mobile Optimization */
+    .message-container { margin: 15px 0; padding: 15px; border-radius: 10px; position: relative; border: 1px solid rgba(255,255,255,0.1); }
+    .user-message { background-color: #2e3136; margin-left: 20px; }
+    .assistant-message { background-color: #36393f; margin-right: 20px; }
+    .thinking-container { background-color: #1e1e2e; border-left: 3px solid #ffd700; padding: 10px; margin: 10px 0; font-style: italic; }
+    .timestamp { font-size: 0.8em; color: rgba(255,255,255,0.5); text-align: right; margin-top: 5px; }
+    .copy-btn { position: absolute; top: 5px; right: 5px; padding: 4px 8px; background-color: rgba(255,255,255,0.1);
+                border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff; font-size: 12px; cursor: pointer;
+                opacity: 0; transition: all 0.2s ease; }
+    .message-container:hover .copy-btn { opacity: 1; }
+    .copy-btn:hover { background-color: rgba(255,255,255,0.2); }
     @media (max-width: 768px) {
-        .message-container {
-            margin: 10px 5px;
-        }
-        .stButton>button {
-            width: 100%;
-        }
-    }
-    
-    /* Custom Scrollbar */
-    ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-    }
-    ::-webkit-scrollbar-track {
-        background: rgba(255, 255, 255, 0.1);
-    }
-    ::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.2);
-        border-radius: 4px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-        background: rgba(255, 255, 255, 0.3);
+        .message-container { margin: 10px 5px; }
+        .stButton>button { width: 100%; }
     }
 </style>
 
 <script>
 function copyMessage(element) {
     const text = element.getAttribute('data-message');
-    const textarea = document.createElement('textarea');
-    textarea.innerHTML = text;
-    const decodedText = textarea.value
-        .replace(/&quot;/g, '"')
-        .replace(/&#x27;/g, "'")
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>');
+    const decoded = text.replace(/&amp;/g, '&')
+                       .replace(/&lt;/g, '<')
+                       .replace(/&gt;/g, '>')
+                       .replace(/&quot;/g, '"')
+                       .replace(/&#39;/g, "'")
+                       .replace(/&#x27;/g, "'");
     
-    navigator.clipboard.writeText(decodedText).then(() => {
+    navigator.clipboard.writeText(decoded).then(() => {
         element.innerText = 'Copied!';
         element.style.backgroundColor = 'rgba(50, 205, 50, 0.3)';
         setTimeout(() => {
             element.innerText = 'Copy';
-            element.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+            element.style.backgroundColor = '';
         }, 2000);
-    }).catch(err => {
-        console.error('Failed to copy:', err);
+    }).catch(() => {
         element.innerText = 'Error!';
-        element.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
-        setTimeout(() => {
-            element.innerText = 'Copy';
-            element.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
-        }, 2000);
+        setTimeout(() => element.innerText = 'Copy', 2000);
     });
 }
 </script>
 """, unsafe_allow_html=True)
 
-# Initialize session state
+def safe_html_with_quotes(text: str) -> str:
+    if not isinstance(text, str):
+        text = str(text)
+    return (text.replace('&', '&amp;')
+                .replace('<', '&lt;')
+                .replace('>', '&gt;')
+                .replace('"', '&quot;')
+                .replace("'", '&#39;'))
+
 if "chats" not in st.session_state:
     st.session_state.chats = {
         "Default": {
@@ -190,13 +95,10 @@ if "show_thinking" not in st.session_state:
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 
-# Retry decorator for API calls
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def invoke_bedrock_with_retry(client, **kwargs):
-    """Invoke Bedrock with exponential backoff retry logic."""
     try:
-        response = client.invoke_model(**kwargs)
-        return response
+        return client.invoke_model(**kwargs)
     except Exception as e:
         if "ThrottlingException" in str(e):
             st.warning("Rate limit reached. Waiting before retry...")
@@ -204,7 +106,6 @@ def invoke_bedrock_with_retry(client, **kwargs):
         raise e
 
 def validate_thinking_process(response: str) -> tuple[str, str]:
-    """Validate and extract thinking process and main response."""
     thinking_pattern = r'<thinking>(.*?)</thinking>'
     thinking_match = re.search(thinking_pattern, response, re.DOTALL)
     
@@ -221,7 +122,6 @@ def validate_thinking_process(response: str) -> tuple[str, str]:
     return thinking, main_response
 
 def enforce_thinking_template(prompt: str) -> str:
-    """Enhance prompt to enforce thinking process."""
     return f"""You must structure your response in this exact format:
 
 <thinking>
@@ -239,7 +139,6 @@ Remember: Thinking tags are REQUIRED. Do not skip them."""
 
 @st.cache_resource
 def get_bedrock_client():
-    """Initialize and return Bedrock client."""
     try:
         return boto3.client(
             service_name='bedrock-runtime',
@@ -249,11 +148,9 @@ def get_bedrock_client():
         )
     except Exception as e:
         st.error(f"Failed to initialize Bedrock client: {str(e)}")
-        st.info("Please check your AWS credentials in Streamlit secrets.")
         return None
 
 def process_message(message: str, role: str, thinking: str = None) -> dict:
-    """Process and format a chat message."""
     msg = {
         "role": role,
         "content": message,
@@ -263,26 +160,9 @@ def process_message(message: str, role: str, thinking: str = None) -> dict:
         msg["thinking"] = thinking
     return msg
 
-def highlight_search_terms(text: str, search_term: str) -> str:
-    """Highlight search terms in text while preserving HTML safety."""
-    if not search_term:
-        return safe_html(text)
-    
-    escaped_text = safe_html(text)
-    if not search_term.strip():
-        return escaped_text
-        
-    try:
-        pattern = re.compile(f'({re.escape(search_term)})', re.IGNORECASE)
-        return pattern.sub(r'<span class="search-highlight">\1</span>', escaped_text)
-    except Exception:
-        return escaped_text
-
-# Sidebar
 with st.sidebar:
     st.title("Chat Management")
-    st.session_state.search_query = st.text_input("🔍 Search messages", 
-                                                 help="Search through message history")
+    st.session_state.search_query = st.text_input("🔍 Search messages")
     
     new_chat_name = st.text_input("New Chat Name")
     if st.button("Create Chat") and new_chat_name:
@@ -301,43 +181,18 @@ with st.sidebar:
         else:
             st.error("Invalid chat name. Use only letters, numbers, spaces, and hyphens")
     
-    st.session_state.current_chat = st.selectbox(
-        "Select Chat",
-        options=list(st.session_state.chats.keys()),
-        help="Switch between different chat conversations"
-    )
+    st.session_state.current_chat = st.selectbox("Select Chat", options=list(st.session_state.chats.keys()))
     
     st.divider()
-    st.subheader("Settings")
     current_chat = st.session_state.chats[st.session_state.current_chat]
-    
-    temperature = st.slider(
-        "Temperature",
-        0.0, 1.0, current_chat["settings"]["temperature"],
-        help="Higher values make output more creative but less focused"
-    )
-    
-    max_tokens = st.slider(
-        "Max Tokens",
-        100, 4096, current_chat["settings"]["max_tokens"],
-        help="Maximum length of the response"
-    )
-    
-    st.session_state.show_thinking = st.toggle(
-        "Show Thinking Process",
-        value=st.session_state.show_thinking,
-        help="Display Claude's reasoning process"
-    )
+    temperature = st.slider("Temperature", 0.0, 1.0, current_chat["settings"]["temperature"])
+    max_tokens = st.slider("Max Tokens", 100, 4096, current_chat["settings"]["max_tokens"])
+    st.session_state.show_thinking = st.toggle("Show Thinking Process", value=st.session_state.show_thinking)
     
     current_chat["settings"].update({"temperature": temperature, "max_tokens": max_tokens})
     
     st.divider()
-    st.subheader("System Prompt")
-    system_prompt = st.text_area(
-        "Customize",
-        value=current_chat["system_prompt"],
-        help="Define how Claude should behave"
-    )
+    system_prompt = st.text_area("System Prompt", value=current_chat["system_prompt"])
     if system_prompt != current_chat["system_prompt"]:
         current_chat["system_prompt"] = system_prompt
     
@@ -352,20 +207,12 @@ with st.sidebar:
                 mime="application/json"
             )
     with col2:
-        if st.button("Clear Chat", type="secondary"):
-            if st.session_state.messages:
-                clear_chat = st.button(
-                    "Confirm Clear",
-                    help="This will delete all messages in the current chat"
-                )
-                if clear_chat:
-                    current_chat["messages"] = []
-                    st.rerun()
+        if st.button("Clear Chat"):
+            current_chat["messages"] = []
+            st.rerun()
 
-# Main chat interface
 st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
 
-# Display messages with search functionality
 messages_to_display = current_chat["messages"]
 if st.session_state.search_query:
     search_term = st.session_state.search_query.lower()
@@ -375,14 +222,9 @@ if st.session_state.search_query:
 
 for message in messages_to_display:
     with st.chat_message(message["role"]):
-        highlighted_content = highlight_search_terms(
-            message['content'],
-            st.session_state.search_query
-        )
-        
         st.markdown(f"""
         <div class="message-container {message['role']}-message">
-            {highlighted_content}
+            {safe_html_with_quotes(message['content'])}
             <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html_with_quotes(message['content'])}">Copy</button>
             <div class="timestamp">{message.get('timestamp', 'No timestamp')}</div>
         </div>
@@ -390,24 +232,19 @@ for message in messages_to_display:
         
         if message['role'] == 'assistant' and message.get('thinking'):
             with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
-                highlighted_thinking = highlight_search_terms(
-                    message['thinking'],
-                    st.session_state.search_query
-                )
                 st.markdown(f"""
                 <div class="thinking-container">
-                    {highlighted_thinking}
+                    {safe_html_with_quotes(message['thinking'])}
                     <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html_with_quotes(message['thinking'])}">Copy</button>
                 </div>
                 """, unsafe_allow_html=True)
 
-# Chat input and response
-if prompt := st.chat_input("Message Claude...", key="chat_input"):
+if prompt := st.chat_input("Message Claude..."):
     current_chat["messages"].append(process_message(prompt, "user"))
     with st.chat_message("user"):
         st.markdown(f"""
         <div class="message-container user-message">
-            {safe_html(prompt)}
+            {safe_html_with_quotes(prompt)}
             <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html_with_quotes(prompt)}">Copy</button>
             <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
         </div>
@@ -419,20 +256,17 @@ if prompt := st.chat_input("Message Claude...", key="chat_input"):
             try:
                 with st.spinner("Thinking..."):
                     conversation_history = []
-                    # Add recent message history for context
                     for msg in current_chat["messages"][-5:]:
                         conversation_history.append({
                             "role": msg["role"],
                             "content": [{"type": "text", "text": msg["content"]}]
                         })
                     
-                    # Add current prompt with system instructions and thinking enforcement
                     conversation_history.append({
                         "role": "user",
                         "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(prompt)}"}]
                     })
                     
-                    # Make API call with retry logic
                     response = invoke_bedrock_with_retry(
                         client,
                         modelId="arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -457,7 +291,7 @@ if prompt := st.chat_input("Message Claude...", key="chat_input"):
                     
                     st.markdown(f"""
                     <div class="message-container assistant-message">
-                        {safe_html(main_response)}
+                        {safe_html_with_quotes(main_response)}
                         <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html_with_quotes(main_response)}">Copy</button>
                         <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
                     </div>
@@ -467,7 +301,7 @@ if prompt := st.chat_input("Message Claude...", key="chat_input"):
                         with st.expander("Thinking Process", expanded=st.session_state.show_thinking):
                             st.markdown(f"""
                             <div class="thinking-container">
-                                {safe_html(thinking_process)}
+                                {safe_html_with_quotes(thinking_process)}
                                 <button class="copy-btn" onclick="copyMessage(this)" data-message="{safe_html_with_quotes(thinking_process)}">Copy</button>
                             </div>
                             """, unsafe_allow_html=True)
@@ -475,10 +309,3 @@ if prompt := st.chat_input("Message Claude...", key="chat_input"):
             except Exception as e:
                 st.error(f"Error: {str(e)}")
                 st.info("If you're seeing an authentication error, please check your AWS credentials.")
-
-# Footer with helpful information
-st.markdown("---")
-st.caption(
-    "💡 **Tips:** Use the sidebar to manage chats, adjust settings, and customize Claude's behavior. "
-    "Search through messages using the search box above."
-)
