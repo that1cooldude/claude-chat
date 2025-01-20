@@ -7,6 +7,8 @@ import re
 import html
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
+from io import StringIO
+import csv
 
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
@@ -24,12 +26,20 @@ st.markdown("""
     .edit-btn { right: 65px; top: 5px; }
     .delete-btn { right: 115px; top: 5px; }
     .retry-btn { right: 165px; top: 5px; }
-    .message-container:hover .action-btn { opacity: 1; }
-    .action-btn:hover { background-color: rgba(255,255,255,0.2); }
+    .reaction-btns { position: absolute; right: 215px; top: 5px; opacity: 0; transition: all 0.2s ease; }
+    .reaction-btn { padding: 4px 8px; margin: 0 2px; background-color: rgba(255,255,255,0.1);
+                   border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff; cursor: pointer; }
+    .message-container:hover .action-btn, .message-container:hover .reaction-btns { opacity: 1; }
+    .action-btn:hover, .reaction-btn:hover { background-color: rgba(255,255,255,0.2); }
+    .reaction-btn.active { background-color: rgba(50, 205, 50, 0.3); }
+    .favorite-prompt { padding: 10px; margin: 5px 0; background-color: rgba(255,255,255,0.1); 
+                      border-radius: 5px; cursor: pointer; }
+    .favorite-prompt:hover { background-color: rgba(255,255,255,0.2); }
     .edit-area { margin-top: 10px; background-color: rgba(0,0,0,0.2); padding: 10px; border-radius: 5px; }
     @media (max-width: 768px) {
         .message-container { margin: 10px 5px; }
-        .action-btn { opacity: 1; } 
+        .action-btn, .reaction-btns { opacity: 1; }
+        .reaction-btns { position: relative; right: auto; top: auto; margin-top: 10px; }
         .stButton>button { width: 100%; }
     }
 </style>
@@ -64,6 +74,14 @@ function deleteMessage(idx) {
 
 function retryMessage(idx) {
     window.streamlitApp.setComponentValue({action: 'retry', messageIdx: idx});
+}
+
+function reactToMessage(idx, reaction) {
+    window.streamlitApp.setComponentValue({action: 'react', messageIdx: idx, reaction: reaction});
+}
+
+function favoritePrompt(prompt) {
+    window.streamlitApp.setComponentValue({action: 'favorite', prompt: prompt});
 }
 </script>
 """, unsafe_allow_html=True)
@@ -104,6 +122,10 @@ if "editing_message" not in st.session_state:
     st.session_state.editing_message = None
 if "message_action" not in st.session_state:
     st.session_state.message_action = None
+if "favorite_prompts" not in st.session_state:
+    st.session_state.favorite_prompts = []
+if "reactions" not in st.session_state:
+    st.session_state.reactions = {}
 
 def safe_html_with_quotes(text: str) -> str:
     if not isinstance(text, str):
@@ -173,7 +195,8 @@ def process_message(message: str, role: str, thinking: str = None) -> dict:
     msg = {
         "role": role,
         "content": message,
-        "timestamp": datetime.now().strftime('%I:%M %p')
+        "timestamp": datetime.now().strftime('%I:%M %p'),
+        "reactions": {"likes": 0, "dislikes": 0}
     }
     if thinking:
         msg["thinking"] = thinking
@@ -204,6 +227,20 @@ def get_chat_response(prompt: str, conversation_history: list, client, settings:
     except Exception as e:
         st.error(f"Error: {str(e)}")
         return None, None
+
+def export_chat_to_csv(chat):
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Role', 'Content', 'Thinking Process', 'Timestamp', 'Reactions'])
+    for message in chat["messages"]:
+        writer.writerow([
+            message["role"],
+            message["content"],
+            message.get("thinking", ""),
+            message.get("timestamp", ""),
+            json.dumps(message.get("reactions", {}))
+        ])
+    return output.getvalue()
 
 # Sidebar
 with st.sidebar:
@@ -243,9 +280,10 @@ with st.sidebar:
         current_chat["system_prompt"] = system_prompt
     
     st.divider()
+    st.subheader("Export Options")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Export Chat"):
+        if st.button("Export JSON"):
             st.download_button(
                 "Download JSON",
                 data=json.dumps(current_chat, indent=2),
@@ -253,8 +291,24 @@ with st.sidebar:
                 mime="application/json"
             )
     with col2:
-        if st.button("Clear Chat"):
-            current_chat["messages"] = []
+        if st.button("Export CSV"):
+            csv_data = export_chat_to_csv(current_chat)
+            st.download_button(
+                "Download CSV",
+                data=csv_data,
+                file_name=f"chat_export_{st.session_state.current_chat}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+    
+    if st.button("Clear Chat"):
+        current_chat["messages"] = []
+        st.rerun()
+    
+    st.divider()
+    st.subheader("Favorite Prompts")
+    for prompt in st.session_state.favorite_prompts:
+        if st.button(f"Use: {prompt[:50]}...", key=f"fav_{prompt}"):
+            st.session_state.reuse_prompt = prompt
             st.rerun()
 
 st.title(f"🤖 Claude Chat - {st.session_state.current_chat}")
@@ -287,9 +341,23 @@ for idx, message in enumerate(messages_to_display):
                 <button class="action-btn edit-btn" onclick="editMessage({idx})">Edit</button>
                 <button class="action-btn delete-btn" onclick="deleteMessage({idx})">Delete</button>
                 """
+                if message["content"] not in st.session_state.favorite_prompts:
+                    action_buttons += f"""
+                    <button class="action-btn favorite-btn" onclick="favoritePrompt('{safe_html_with_quotes(message['content'])}')">
+                        Favorite
+                    </button>
+                    """
             elif message["role"] == "assistant":
                 action_buttons = f"""
                 <button class="action-btn retry-btn" onclick="retryMessage({idx})">Retry</button>
+                <div class="reaction-btns">
+                    <button class="reaction-btn like-btn" onclick="reactToMessage({idx}, 'like')">
+                        👍 {message.get('reactions', {}).get('likes', 0)}
+                    </button>
+                    <button class="reaction-btn dislike-btn" onclick="reactToMessage({idx}, 'dislike')">
+                        👎 {message.get('reactions', {}).get('dislikes', 0)}
+                    </button>
+                </div>
                 """
             
             st.markdown(f"""
@@ -345,6 +413,16 @@ if 'message_action' in st.session_state and st.session_state.message_action:
                             process_message(main_response, "assistant", thinking_process)
                         )
                 break
+    elif action['action'] == 'react':
+        msg_idx = action['messageIdx']
+        reaction = action['reaction']
+        if 'reactions' not in current_chat["messages"][msg_idx]:
+            current_chat["messages"][msg_idx]['reactions'] = {'likes': 0, 'dislikes': 0}
+        current_chat["messages"][msg_idx]['reactions'][f"{reaction}s"] += 1
+    elif action['action'] == 'favorite':
+        if action['prompt'] not in st.session_state.favorite_prompts:
+            st.session_state.favorite_prompts.append(action['prompt'])
+    
     st.session_state.message_action = None
     st.rerun()
 
@@ -390,6 +468,11 @@ if prompt := st.chat_input("Message Claude..."):
                 <div class="message-container assistant-message">
                     {safe_html_with_quotes(main_response)}
                     <button class="action-btn copy-btn" onclick="copyMessage(this)" data-message="{safe_html_with_quotes(main_response)}">Copy</button>
+                    <button class="action-btn retry-btn" onclick="retryMessage({len(current_chat['messages'])-1})">Retry</button>
+                    <div class="reaction-btns">
+                        <button class="reaction-btn like-btn" onclick="reactToMessage({len(current_chat['messages'])-1}, 'like')">👍 0</button>
+                        <button class="reaction-btn dislike-btn" onclick="reactToMessage({len(current_chat['messages'])-1}, 'dislike')">👎 0</button>
+                    </div>
                     <div class="timestamp">{datetime.now().strftime('%I:%M %p')}</div>
                 </div>
                 """, unsafe_allow_html=True)
