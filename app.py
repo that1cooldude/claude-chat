@@ -15,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS with fixed copy functionality
+# CSS with fixed message display
 st.markdown("""
 <style>
     .chat-container {
@@ -45,6 +45,8 @@ st.markdown("""
         white-space: pre-wrap;
         word-break: break-word;
         margin-right: 100px;
+        font-size: 1rem;
+        line-height: 1.5;
     }
     
     .message-actions {
@@ -79,6 +81,8 @@ st.markdown("""
         color: rgba(255, 255, 255, 0.5);
         text-align: right;
         margin-top: 0.5rem;
+        padding-top: 0.5rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
     }
     
     .thinking-container {
@@ -102,6 +106,10 @@ st.markdown("""
         }
     }
     
+    .stButton > button {
+        width: auto;
+    }
+    
     #MainMenu, footer, header {display: none;}
     .stDeployButton {display: none;}
 </style>
@@ -121,9 +129,7 @@ function copyMessage(element, messageId) {
     }).catch(err => {
         console.error('Failed to copy:', err);
         element.textContent = 'Error!';
-        setTimeout(() => {
-            element.textContent = 'Copy';
-        }, 2000);
+        setTimeout(() => element.textContent = 'Copy', 2000);
     });
 }
 
@@ -185,7 +191,6 @@ def safe_html(text):
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def get_ai_response(prompt: str, temperature: float, max_tokens: int) -> tuple[str, str]:
-    """Get response from AI model with retry logic"""
     client = get_bedrock_client()
     if not client:
         return None, "Failed to initialize AI client"
@@ -221,7 +226,6 @@ def get_ai_response(prompt: str, temperature: float, max_tokens: int) -> tuple[s
         return None, str(e)
 
 def add_message(role: str, content: str, thinking: str = None):
-    """Add a message to the conversation history"""
     st.session_state.messages.append({
         'role': role,
         'content': content,
@@ -230,7 +234,6 @@ def add_message(role: str, content: str, thinking: str = None):
     })
 
 def export_chat():
-    """Export chat history to CSV"""
     output = StringIO()
     writer = csv.writer(output)
     writer.writerow(['Role', 'Content', 'Thinking', 'Timestamp'])
@@ -289,9 +292,12 @@ st.title("💭 AI Chat Assistant")
 # Display messages
 for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
+        # Only display the actual message content, no UI elements
+        message_content = message["content"].strip()
+        
         st.markdown(f"""
         <div class="message-container {message['role']}-message" id="message-{idx}">
-            <div class="message-content">{safe_html(message['content'])}</div>
+            <div class="message-content">{safe_html(message_content)}</div>
             <div class="message-actions">
                 <button class="action-button" onclick="copyMessage(this, {idx})">Copy</button>
                 {"<button class='action-button' onclick='editMessage(" + str(idx) + ")'>Edit</button>" if message['role'] == 'user' else ""}
