@@ -28,6 +28,7 @@ st.markdown("""
                 border-radius: 3px; color: white; cursor: pointer; opacity: 0; transition: opacity 0.3s; }
     .message-container:hover .copy-btn { opacity: 1; }
     .search-highlight { background-color: #ffd70066; padding: 0 2px; border-radius: 2px; }
+    .search-results { background-color: #2a2d2e; padding: 10px; border-radius: 5px; margin: 10px 0; }
     @media (max-width: 768px) { 
         .message-container { margin: 10px 5px; }
         .stButton>button { width: 100%; }
@@ -36,7 +37,10 @@ st.markdown("""
 <script>
 function copyMessage(element) {
     const text = element.getAttribute('data-message');
-    navigator.clipboard.writeText(text);
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    const decodedText = textarea.value;
+    navigator.clipboard.writeText(decodedText);
     element.innerText = 'Copied!';
     setTimeout(() => { element.innerText = 'Copy'; }, 2000);
 }
@@ -76,6 +80,37 @@ if "show_thinking" not in st.session_state:
     st.session_state.show_thinking = True
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
+if "use_search" not in st.session_state:
+    st.session_state.use_search = True
+
+def perform_search(query: str) -> str:
+    """Execute Perplexity search and return results."""
+    try:
+        search_result = search_via_perplexity(keyword=query)
+        return search_result
+    except Exception as e:
+        st.error(f"Search error: {str(e)}")
+        return None
+
+def enhance_prompt_with_search(prompt: str) -> str:
+    """Add search results to prompt if needed and allowed."""
+    if not st.session_state.use_search:
+        return prompt
+        
+    # Keywords that might trigger a search
+    search_triggers = ['current', 'latest', 'news', 'recent', 'today', 'now', 'update']
+    
+    if any(trigger in prompt.lower() for trigger in search_triggers):
+        with st.spinner("Searching for current information..."):
+            search_results = perform_search(prompt)
+            if search_results:
+                return f"""Here is some current information to help with the response:
+{search_results}
+
+Original question: {prompt}
+
+Please incorporate this information into your response if relevant."""
+    return prompt
 
 def validate_thinking_process(response: str) -> tuple[str, str]:
     """Validate and extract thinking process and main response."""
@@ -159,17 +194,20 @@ with st.sidebar:
     st.session_state.current_chat = st.selectbox("Select Chat", options=list(st.session_state.chats.keys()))
     
     st.divider()
-    system_prompt = st.text_area("System Prompt", value=st.session_state.chats[st.session_state.current_chat]["system_prompt"])
-    if system_prompt != st.session_state.chats[st.session_state.current_chat]["system_prompt"]:
-        st.session_state.chats[st.session_state.current_chat]["system_prompt"] = system_prompt
-    
-    st.divider()
+    st.subheader("Settings")
     current_chat = st.session_state.chats[st.session_state.current_chat]
     temperature = st.slider("Temperature", 0.0, 1.0, current_chat["settings"]["temperature"])
     max_tokens = st.slider("Max Tokens", 100, 4096, current_chat["settings"]["max_tokens"])
     st.session_state.show_thinking = st.toggle("Show Thinking Process", value=st.session_state.show_thinking)
+    st.session_state.use_search = st.toggle("Enable Internet Search", value=st.session_state.use_search)
     
     current_chat["settings"].update({"temperature": temperature, "max_tokens": max_tokens})
+    
+    st.divider()
+    st.subheader("System Prompt")
+    system_prompt = st.text_area("Customize", value=current_chat["system_prompt"])
+    if system_prompt != current_chat["system_prompt"]:
+        current_chat["system_prompt"] = system_prompt
     
     st.divider()
     col1, col2 = st.columns(2)
@@ -231,6 +269,9 @@ if prompt := st.chat_input("Message Claude..."):
         client = get_bedrock_client()
         try:
             with st.spinner("Thinking..."):
+                # First, enhance prompt with search results if needed
+                enhanced_prompt = enhance_prompt_with_search(prompt)
+                
                 conversation_history = []
                 # Add recent message history for context
                 for msg in current_chat["messages"][-5:]:
@@ -240,10 +281,9 @@ if prompt := st.chat_input("Message Claude..."):
                     })
                 
                 # Add current prompt with system instructions and thinking enforcement
-                enhanced_prompt = f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(prompt)}"
                 conversation_history.append({
                     "role": "user",
-                    "content": [{"type": "text", "text": enhanced_prompt}]
+                    "content": [{"type": "text", "text": f"{current_chat['system_prompt']}\n\n{enforce_thinking_template(enhanced_prompt)}"}]
                 })
                 
                 # Make API call
