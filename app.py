@@ -1,4 +1,4 @@
-import streamlit as st 
+import streamlit as st
 import boto3
 import json
 import os
@@ -118,8 +118,8 @@ def get_chat_response(client, conversation, settings):
 
             response = client.invoke_model(
                 modelId=(
-                    "arn:aws:bedrock:us-east-2:127214158930:inference-profile/"
-                    "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+                    "arn:aws:bedrock:us-east-2:127214158930:"
+                    "inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
                 ),
                 contentType="application/json",
                 accept="application/json",
@@ -158,6 +158,23 @@ def process_message(message: str, role: str) -> dict:
         "content": message,
         "timestamp": datetime.now().strftime('%I:%M %p')
     }
+
+def approximate_tokens(text: str) -> int:
+    """
+    Approximate token usage by splitting on whitespace.
+    This is naive but won't break anything.
+    """
+    # If you need a more precise method, you'll have to integrate a real tokenizer.
+    return len(text.split())
+
+def total_token_usage(conversation) -> int:
+    """
+    Sum approximate tokens for all messages in the conversation.
+    """
+    total = 0
+    for msg in conversation:
+        total += approximate_tokens(msg["content"])
+    return total
 
 def save_chat_to_folder(chat_name, chat_data):
     """
@@ -228,6 +245,26 @@ with st.sidebar:
             current_chat["settings"].get("max_tokens", 1000),
             help="Maximum length of Claude's responses."
         )
+
+        # Display approximate token usage
+        st.subheader("Approx. Token Usage")
+        total_tokens = total_token_usage(current_chat["messages"])
+        st.write(f"Total Conversation Tokens: **{total_tokens}**")
+
+        # Internet Search using Perplexity
+        st.subheader("Internet Search")
+        perplex_query = st.text_input("Search Query", key="perplex_query")
+        if st.button("Search Perplexity"):
+            # Show clickable link to open Perplexity in a new tab
+            if perplex_query.strip():
+                encoded_query = perplex_query.strip().replace(" ", "+")
+                perplex_url = f"https://www.perplexity.ai/search?q={encoded_query}"
+                st.markdown(
+                    f"[Open Perplexity in new tab]({perplex_url})",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.warning("Please enter a search query.")
         
         # Save and Load
         st.subheader("Storage")
@@ -316,7 +353,7 @@ try:
         if client:
             response = get_chat_response(
                 client=client,
-                conversation=current_chat["messages"],  # pass entire conversation
+                conversation=current_chat["messages"],
                 settings=current_chat["settings"]
             )
             if response:
