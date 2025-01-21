@@ -1,5 +1,6 @@
 import streamlit as st
 import boto3
+from bedrock.runtime import BedrockRuntimeClient
 import json
 from datetime import datetime
 import re
@@ -9,10 +10,10 @@ import threading
 from time import sleep
 
 # CONFIG
-AWS_REGION = st.secrets.get("AWS_DEFAULT_REGION", "us-west-2")  # Changed region
+AWS_REGION = st.secrets.get("AWS_DEFAULT_REGION", "us-west-2")
 S3_BUCKET_NAME = st.secrets.get("S3_BUCKET_NAME", "my-llm-chats-bucket")
 MODEL_ARN = (
-    "arn:aws:bedrock:us-west-2::{account_id}:model(us.anthropic.claude-3-sonnet-20241022-v2)"  # Corrected ARN format
+    "arn:aws:bedrock:us-west-2::model(us.anthropic.claude-3-sonnet-20241022-v2)"
 )
 
 st.set_page_config(
@@ -21,20 +22,15 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize AWS Bedrock client
-def init_bedrock_client():
+# Initialize AWS Bedrock runtime client
+def init_bedrock_runtime():
     try:
-        return boto3.client(
-            "bedrock",
-            region_name=AWS_REGION,
-            aws_access_key_id=st.secrets.get("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=st.secrets.get("AWS_SECRET_ACCESS_KEY")
-        )
+        return BedrockRuntimeClient()
     except Exception as e:
-        st.error(f"Failed to initialize AWS Bedrock client: {e}")
+        st.error(f"Failed to initialize AWS Bedrock runtime client: {e}")
         st.stop()
 
-bedrock_client = init_bedrock_client()
+bedrock_runtime = init_bedrock_runtime()
 
 # Session state initialization
 def init_session():
@@ -119,8 +115,8 @@ def build_message_ui(msg, show_thinking):
 # Function to converse with Claude
 def converse_with_claude(prompt):
     try:
-        response = bedrock_client.invoke_model_endpoint(
-            modelArn=MODEL_ARN,  # Changed to use invoke_model_endpoint
+        response = bedrock_runtime.invoke_model(
+            model_arn=MODEL_ARN,
             body=json.dumps({
                 "messages": [
                     {
@@ -140,10 +136,10 @@ def converse_with_claude(prompt):
                 "top_p": 0.9
             }),
             accept="application/json",
-            contentType="application/json"
+            content_type="application/json"
         )
 
-        response_body = json.loads(response['body'].read())
+        response_body = json.loads(response.read())
         return {
             "role": "assistant",
             "content": response_body["messages"][-1]["content"],
@@ -171,43 +167,42 @@ def get_current_chat_data():
 # Main Layout
 def main():
     init_session()
-    chat_col, settings_col = st.columns([2,1], gap="large")
+    
+    # Use columns for better layout
+    chat_col, settings_col = st.columns([3, 1])
 
     # Chat Column
     with chat_col:
         st.header("Claude Chat")
         
-        # Create a container for the chat display
+        # Chat messages container
         chat_container = st.container()
-        
         with chat_container:
-            # Display messages with new UI
             current_chat_data = get_current_chat_data()
             if isinstance(current_chat_data.get('messages'), list):
                 try:
                     for msg in current_chat_data["messages"]:
                         build_message_ui(msg, st.session_state.show_thinking)
-                except KeyError:
-                    st.error("Error accessing message data. Please reload the app.")
                 except Exception as e:
                     st.error(f"Error in message display: {e}")
             
-            # Add typing indicator
+            # Show typing indicator
             if st.session_state.get("typing", False):
                 show_typing_indicator()
         
-        # Create a form for message input and send button
-        with st.form("message_form"):
+        # Form for sending messages
+        with st.form("message_form", clear_on_submit=True):
             st.subheader("Type Your Message")
             user_input = st.text_area(
-                "Message",
-                value=st.session_state.user_input_text,
+                "",
+                value="",
                 height=100,
-                key="user_input_text_form"
+                key="user_input_text_form",
+                placeholder="Type your message here..."
             )
-
-            # Column layout for controls
-            col1, col2, col3 = st.columns([1,1,2])
+            
+            # Controls
+            col1, col2, col3 = st.columns([1, 1, 2])
             
             with col1:
                 st.checkbox(
@@ -231,7 +226,7 @@ def main():
                 prompt = user_input.strip()
                 if prompt:
                     try:
-                        # Add user message to chat data
+                        # Add user message
                         current_chat_data = get_current_chat_data()
                         if isinstance(current_chat_data, dict):
                             current_chat_data["messages"].append({
@@ -241,15 +236,12 @@ def main():
                             })
                             st.session_state.new_messages_since_last_update = True
 
-                            # Simulating Claude's response
+                            # Get Claude's response
                             assistant_response = converse_with_claude(prompt)
                             if assistant_response:
                                 current_chat_data["messages"].append(assistant_response)
                     except Exception as e:
                         st.error(f"Error sending message: {e}")
-        
-        # Clear input after submission
-        st.session_state.user_input_text = ""
 
 if __name__ == "__main__":
     main()
