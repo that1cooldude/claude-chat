@@ -2,8 +2,7 @@ import streamlit as st
 import boto3
 import json
 import re
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -74,6 +73,14 @@ st.markdown("""
     word-break: break-word;
 }
 </style>
+
+<script>
+document.addEventListener('keydown', function(e) {
+    if (e.ctrlKey && e.key === 'Enter') {
+        document.querySelector('button:contains("Send Message")').click();
+    }
+});
+</script>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
@@ -94,8 +101,6 @@ def init_session():
         st.session_state.show_thinking = False
     if "user_input_text" not in st.session_state:
         st.session_state.user_input_text = ""
-    if "processing_message" not in st.session_state:
-        st.session_state.processing_message = False
 
 init_session()
 
@@ -147,7 +152,7 @@ def save_chat_to_s3(chat_name, chat_data):
             ContentType="application/json"
         )
         st.success(f"Saved chat '{chat_name}' to S3")
-    except ClientError as e:
+    except Exception as e:
         st.error(f"Save error: {e}")
 
 def load_chat_from_s3(chat_name):
@@ -177,7 +182,7 @@ def list_chats_s3():
             for k in [item["Key"] for item in objs["Contents"]]
             if k.endswith(".json")
         ])
-    except ClientError as e:
+    except Exception as e:
         st.error(f"List error: {e}")
         return []
 
@@ -186,24 +191,24 @@ def list_chats_s3():
 # -----------------------------------------------------------------------------
 def build_bedrock_messages(chat_data):
     bedrock_msgs = []
-    
+
     if chat_data.get("force_thinking", False):
         bedrock_msgs.append({
-            "role": "user",
-            "content": [{"type": "text", "text": "Please include chain-of-thought in <thinking>...</thinking> if possible."}]
+            "role":"user",
+            "content":[{"type":"text","text":"Please include chain-of-thought in <thinking>...</thinking> if possible."}]
         })
 
-    sys_prompt = chat_data.get("system_prompt", "").strip()
+    sys_prompt = chat_data.get("system_prompt","").strip()
     if sys_prompt:
         bedrock_msgs.append({
-            "role": "user",
-            "content": [{"type": "text", "text": f"(System Prompt)\n{sys_prompt}"}]
+            "role":"user",
+            "content":[{"type":"text","text":f"(System Prompt)\n{sys_prompt}"}]
         })
 
     for msg in chat_data["messages"]:
         bedrock_msgs.append({
             "role": msg["role"],
-            "content": [{"type": "text", "text": msg["content"]}]
+            "content": [{"type":"text","text": msg["content"]}]
         })
     return bedrock_msgs
 
@@ -239,44 +244,6 @@ def invoke_claude(client, chat_data, temperature, max_tokens):
         return combined, thinking
     return "No response from Claude.", ""
 
-def create_message(role, content, thinking=""):
-    return {
-        "role": role,
-        "content": content,
-        "thinking": thinking,
-        "timestamp": datetime.now().strftime("%I:%M %p")
-    }
-
-def handle_send_message(chat_data, temperature, max_tokens):
-    user_msg = st.session_state.user_input_text.strip()
-    if not user_msg:
-        st.warning("Please enter a message.")
-        return
-
-    # Add user message
-    chat_data["messages"].append(create_message("user", user_msg))
-    
-    # Clear input
-    st.session_state.user_input_text = ""
-    st.session_state.processing_message = True
-
-    # Get Claude's response
-    with st.status("Getting response from Claude...", expanded=True) as status:
-        client = get_bedrock_client()
-        if client:
-            try:
-                response, thinking = invoke_claude(client, chat_data, temperature, max_tokens)
-                chat_data["messages"].append(
-                    create_message("assistant", response, thinking)
-                )
-                status.update(label="Response received!", state="complete")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-                status.update(label="Error occurred", state="error")
-    
-    st.session_state.processing_message = False
-
 # -----------------------------------------------------------------------------
 # MAIN LAYOUT
 # -----------------------------------------------------------------------------
@@ -285,22 +252,20 @@ col_chat, col_settings = st.columns([2,1], gap="large")
 with col_settings:
     st.title("Claude Chat")
 
-    # Switch conversation
+    # Conversations
+    st.subheader("Conversations")
     chat_keys = list(st.session_state.chats.keys())
     chosen_chat = st.selectbox(
-        "Pick a Conversation",
+        "Select Chat",
         options=chat_keys,
         index=chat_keys.index(st.session_state.current_chat)
-        if st.session_state.current_chat in chat_keys
-        else 0
     )
     if chosen_chat != st.session_state.current_chat:
         st.session_state.current_chat = chosen_chat
-        st.rerun()
 
     # Create new conversation
     new_chat_name = st.text_input("New Chat Name")
-    if st.button("Create Conversation"):
+    if st.button("Create Chat"):
         if new_chat_name and new_chat_name not in st.session_state.chats:
             st.session_state.chats[new_chat_name] = {
                 "messages": [],
@@ -308,54 +273,70 @@ with col_settings:
                 "force_thinking": False
             }
             st.session_state.current_chat = new_chat_name
-            st.rerun()
 
     chat_data = get_current_chat_data()
 
-    # Model Controls
-    st.subheader("Model Controls")
+    # Model Settings
+    st.subheader("Settings")
     temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
     max_tokens = st.slider("Max Tokens", 100, 4096, 1000)
 
     # System Prompt
     st.subheader("System Prompt")
     chat_data["system_prompt"] = st.text_area(
-        "Claude instructions",
-        value=chat_data.get("system_prompt", "")
+        "Instructions for Claude",
+        value=chat_data.get("system_prompt",""),
+        height=100
     )
 
-    # Chain-of-Thought
-    st.subheader("Chain-of-Thought")
+    # Thinking Process
+    st.subheader("Thinking Process")
     chat_data["force_thinking"] = st.checkbox(
-        "Force chain-of-thought in <thinking>...",
-        value=chat_data.get("force_thinking", False)
+        "Request thinking process",
+        value=chat_data.get("force_thinking",False)
     )
     st.session_state.show_thinking = st.checkbox(
-        "Show chain-of-thought",
+        "Show thinking",
         value=st.session_state.show_thinking
     )
 
-    # Save/Load S3
+    # Save/Load
     st.subheader("Save/Load")
-    save_col, load_col = st.columns(2)
-    with save_col:
-        if st.button("Save Chat"):
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 Save"):
             save_chat_to_s3(st.session_state.current_chat, chat_data)
-    with load_col:
-        if st.button("Load Chat"):
+    with col2:
+        if st.button("📂 Load"):
             loaded_data = load_chat_from_s3(st.session_state.current_chat)
             if loaded_data:
                 st.session_state.chats[st.session_state.current_chat] = loaded_data
-                st.rerun()
+                st.success("Loaded chat")
 
-    if st.button("Clear Chat"):
+    # Export Chat
+    if chat_data["messages"]:
+        st.download_button(
+            "📥 Export as Markdown",
+            "\n\n".join([
+                f"## {msg['role'].title()}\n{msg['content']}\n" +
+                (f"### Thinking\n{msg['thinking']}\n" if msg.get('thinking') else "")
+                for msg in chat_data["messages"]
+            ]),
+            f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+            help="Download conversation as Markdown file"
+        )
+
+    if st.button("🗑️ Clear Chat"):
         chat_data["messages"] = []
-        st.rerun()
+
+    # Update Chat Display
+    if st.button("🔄 Refresh Chat", help="Click to see new messages"):
+        st.success("Chat refreshed!")
 
 with col_chat:
-    st.header(f"Conversation: {st.session_state.current_chat}")
+    st.header(f"Chat: {st.session_state.current_chat}")
 
-    # Chat display
+    # Display Messages
     st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
     for msg in chat_data["messages"]:
         bubble_class = "assistant-bubble" if msg["role"]=="assistant" else "user-bubble"
@@ -363,21 +344,49 @@ with col_chat:
         st.markdown(f"<div class='timestamp'>{msg.get('timestamp','')}</div>", unsafe_allow_html=True)
 
         if msg["role"]=="assistant" and st.session_state.show_thinking and msg.get("thinking"):
-            with st.expander("Chain-of-Thought"):
+            with st.expander("💭 Thinking Process"):
                 st.markdown(
                     f"<div class='thinking-expander'><span class='thinking-text'>{msg['thinking']}</span></div>",
                     unsafe_allow_html=True
                 )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Message input
+    # Message Input
     st.text_area(
-        "Message",
+        "Message (Ctrl+Enter to send)",
         key="user_input_text",
-        height=100,
-        placeholder="Type your message here..."
+        height=100
     )
 
-    # Send button
-    if st.button("Send Message", type="primary", use_container_width=True):
-        handle_send_message(chat_data, temperature, max_tokens)
+    if st.button("Send Message", use_container_width=True):
+        user_msg = st.session_state.user_input_text.strip()
+        if user_msg:
+            # Show status while processing
+            with st.status("Processing...", expanded=True) as status:
+                # Add user message
+                chat_data["messages"].append({
+                    "role": "user",
+                    "content": user_msg,
+                    "timestamp": datetime.now().strftime("%I:%M %p")
+                })
+                
+                # Get Claude's response
+                status.update(label="Waiting for Claude...")
+                client = get_bedrock_client()
+                if client:
+                    ans_text, ans_think = invoke_claude(client, chat_data, temperature, max_tokens)
+                    chat_data["messages"].append({
+                        "role": "assistant",
+                        "content": ans_text,
+                        "thinking": ans_think,
+                        "timestamp": datetime.now().strftime("%I:%M %p")
+                    })
+                    status.update(label="Done!", state="complete")
+                
+            # Clear input
+            st.session_state.user_input_text = ""
+            
+            # Show refresh reminder
+            st.info("👆 Click 'Refresh Chat' above to see the new messages")
+        else:
+            st.warning("Please enter a message")
