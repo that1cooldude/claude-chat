@@ -9,11 +9,10 @@ import threading
 from time import sleep
 
 # CONFIG
-AWS_REGION = st.secrets.get("AWS_DEFAULT_REGION", "us-east-2")
+AWS_REGION = st.secrets.get("AWS_DEFAULT_REGION", "us-west-2")  # Changed region
 S3_BUCKET_NAME = st.secrets.get("S3_BUCKET_NAME", "my-llm-chats-bucket")
 MODEL_ARN = (
-    "arn:aws:bedrock:us-east-2:127214158930:"
-    "inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    "arn:aws:bedrock:us-west-2::{account_id}:model(us.anthropic.claude-3-sonnet-20241022-v2)"  # Corrected ARN format
 )
 
 st.set_page_config(
@@ -120,8 +119,8 @@ def build_message_ui(msg, show_thinking):
 # Function to converse with Claude
 def converse_with_claude(prompt):
     try:
-        response = bedrock_client.invoke_model(
-            modelId="us.anthropic.claude-3-sonnet-20241022-v2",
+        response = bedrock_client.invoke_model_endpoint(
+            modelArn=MODEL_ARN,  # Changed to use invoke_model_endpoint
             body=json.dumps({
                 "messages": [
                     {
