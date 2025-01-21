@@ -2,36 +2,9 @@ import streamlit as st
 import boto3
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
-
-# At the top of app.py, after imports
-try:
-    from config.styles import CUSTOM_CSS
-    from modules.aws_utils import get_bedrock_client, get_s3_client
-    USE_MODULES = True
-except ImportError:
-    USE_MODULES = False
-    # Original CSS and client functions remain as fallback
-
-# Replace the CSS section with:
-if USE_MODULES:
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-else:
-    st.markdown("""
-    <style>
-    # ... (original CSS) ...
-    </style>
-    """, unsafe_allow_html=True)
-
-# Replace the AWS client sections:
-if USE_MODULES:
-    bedrock_client = get_bedrock_client()
-    s3_client = get_s3_client()
-else:
-    # Original client initialization code
-
 
 # -----------------------------------------------------------------------------
 # CONFIG
@@ -44,22 +17,29 @@ MODEL_ARN = (
 )
 
 st.set_page_config(
-    page_title="Claude Chat (No Rerun)",
+    page_title="Claude Chat (Enhanced)",
     page_icon="🤖",
     layout="wide"
 )
 
 # -----------------------------------------------------------------------------
-# DISCLAIMER
+# REFRESH CONTROL
 # -----------------------------------------------------------------------------
-# 1) We do NOT use st.rerun() or st.experimental_rerun().
-#    This means the chat won't auto-refresh after sending a message.
-#    The user must either manually reload the page or press an "Update Conversation" button
-#    to see the new assistant reply appended to the UI.
-#
-# 2) The chain-of-thought might not appear if Claude doesn't produce <thinking> tags.
-#
-# 3) It's a simpler, less dynamic experience, but avoids older-Streamlit attribute errors.
+if "refresh_state" not in st.session_state:
+    st.session_state.refresh_state = {
+        "last_update": datetime.now(),
+        "counter": 0,
+        "auto_refresh": False
+    }
+
+def should_update():
+    """Control refresh frequency"""
+    current_time = datetime.now()
+    time_diff = (current_time - st.session_state.refresh_state["last_update"]).seconds
+    if time_diff > 2:  # Minimum 2 seconds between refreshes
+        st.session_state.refresh_state["last_update"] = current_time
+        return True
+    return False
 
 # -----------------------------------------------------------------------------
 # BASIC CSS
@@ -73,7 +53,7 @@ st.markdown("""
     margin-top: 1rem;
 }
 .user-bubble {
-    background-color: #2e3136; /* dark gray for user */
+    background-color: #2e3136;
     color: #fff;
     padding: 12px 16px;
     border-radius: 10px;
@@ -83,7 +63,7 @@ st.markdown("""
     margin-bottom: 4px;
 }
 .assistant-bubble {
-    background-color: #454a50; /* lighter gray for assistant */
+    background-color: #454a50;
     color: #fff;
     padding: 12px 16px;
     border-radius: 10px;
@@ -111,6 +91,13 @@ st.markdown("""
     white-space: pre-wrap;
     word-break: break-word;
 }
+.stButton > button {
+    width: 100%;
+}
+/* Enhancement: Add smooth transitions */
+.chat-message {
+    transition: all 0.3s ease;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -132,12 +119,9 @@ def init_session():
     if "show_thinking" not in st.session_state:
         st.session_state.show_thinking = False
 
-    # We store the typed user message in state
     if "user_input_text" not in st.session_state:
         st.session_state.user_input_text = ""
 
-    # We'll track if a new response has been appended to messages
-    # Because we're not auto-rerunning
     if "new_messages_since_last_update" not in st.session_state:
         st.session_state.new_messages_since_last_update = False
 
@@ -147,7 +131,7 @@ def get_current_chat_data():
     return st.session_state.chats[st.session_state.current_chat]
 
 # -----------------------------------------------------------------------------
-# AWS CLIENTS
+# AWS CLIENTS WITH ENHANCED ERROR HANDLING
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def get_bedrock_client():
@@ -176,65 +160,83 @@ def get_s3_client():
         return None
 
 # -----------------------------------------------------------------------------
-# S3 Save/Load
+# S3 OPERATIONS WITH RETRY AND ERROR HANDLING
 # -----------------------------------------------------------------------------
-def save_chat_to_s3(chat_name, chat_data):
-    s3 = get_s3_client()
-    if not s3:
-        return
-    key = f"conversations/{chat_name}.json"
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+def safe_s3_operation(operation_func):
+    """Wrapper for S3 operations with better error handling"""
     try:
+        return operation_func()
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchKey':
+            st.info("No previous chat found. Starting new conversation.")
+            return None
+        elif error_code == 'ThrottlingException':
+            st.warning("AWS request throttled. Retrying...")
+            raise
+        else:
+            st.error(f"AWS Error: {str(e)}")
+            return None
+    except Exception as e:
+        st.error(f"Unexpected error: {str(e)}")
+        return None
+
+def save_chat_to_s3(chat_name, chat_data):
+    def _save():
+        s3 = get_s3_client()
+        if not s3:
+            return
+        key = f"conversations/{chat_name}.json"
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
             Key=key,
             Body=json.dumps(chat_data, indent=2),
             ContentType="application/json"
         )
-        st.success(f"Saved chat '{chat_name}' to s3://{S3_BUCKET_NAME}/{key}")
-    except ClientError as e:
-        st.error(f"Save error: {e}")
+        return True
+    
+    result = safe_s3_operation(_save)
+    if result:
+        st.success(f"Saved chat '{chat_name}' to S3")
 
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_chat_from_s3(chat_name):
-    s3 = get_s3_client()
-    if not s3:
-        return None
-    key = f"conversations/{chat_name}.json"
-    try:
-        resp = s3.get_object(Bucket=S3_BUCKET_NAME, Key=key)
-        data = json.loads(resp["Body"].read().decode("utf-8"))
-        return data
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NoSuchKey":
+    def _load():
+        s3 = get_s3_client()
+        if not s3:
             return None
-        st.error(f"Load error: {e}")
-        return None
+        key = f"conversations/{chat_name}.json"
+        resp = s3.get_object(Bucket=S3_BUCKET_NAME, Key=key)
+        return json.loads(resp["Body"].read().decode("utf-8"))
+    
+    return safe_s3_operation(_load)
 
 def list_chats_s3():
-    s3 = get_s3_client()
-    if not s3:
-        return []
-    try:
+    def _list():
+        s3 = get_s3_client()
+        if not s3:
+            return []
         objs = s3.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix="conversations/")
         if "Contents" not in objs:
             return []
-        all_names = []
-        for item in objs["Contents"]:
-            k = item["Key"]
-            if k.endswith(".json"):
-                base = k.replace("conversations/","").replace(".json","")
-                all_names.append(base)
-        return sorted(all_names)
-    except ClientError as e:
-        st.error(f"List error: {e}")
-        return []
+        return sorted([
+            k.replace("conversations/","").replace(".json","")
+            for k in [item["Key"] for item in objs["Contents"]]
+            if k.endswith(".json")
+        ])
+    
+    return safe_s3_operation(_list) or []
 
 # -----------------------------------------------------------------------------
-# TOKEN CALC
+# TOKEN CALCULATION WITH CACHING
 # -----------------------------------------------------------------------------
+@st.cache_data(ttl=60)  # Cache for 1 minute
 def approximate_tokens(text: str) -> int:
     return len(text.split())
 
 def total_token_usage(chat_data: dict):
+    """Cached token counting"""
     total = 0
     for m in chat_data["messages"]:
         total += approximate_tokens(m["content"])
@@ -242,14 +244,9 @@ def total_token_usage(chat_data: dict):
     return total
 
 # -----------------------------------------------------------------------------
-# BUILD BEDROCK MSGS
+# CLAUDE INTERACTION
 # -----------------------------------------------------------------------------
 def build_bedrock_messages(chat_data):
-    """
-    1) If 'force_thinking' is True, we prepend a user message: "Please include chain-of-thought..."
-    2) We then add the system_prompt as a user message.
-    3) We add the conversation messages with roles 'user' or 'assistant'.
-    """
     bedrock_msgs = []
 
     if chat_data.get("force_thinking", False):
@@ -274,9 +271,6 @@ def build_bedrock_messages(chat_data):
         })
     return bedrock_msgs
 
-# -----------------------------------------------------------------------------
-# INVOKE CLAUDE
-# -----------------------------------------------------------------------------
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=2, max=6))
 def invoke_claude(client, chat_data, temperature, max_tokens):
     bedrock_msgs = build_bedrock_messages(chat_data)
@@ -301,7 +295,6 @@ def invoke_claude(client, chat_data, temperature, max_tokens):
                 text_bits.append(seg["text"])
         combined = "\n".join(text_bits).strip()
 
-        # Extract <thinking>
         thinking = ""
         match = re.search(r"<thinking>(.*?)</thinking>", combined, re.DOTALL)
         if match:
@@ -319,12 +312,63 @@ def create_message(role, content, thinking=""):
     }
 
 # -----------------------------------------------------------------------------
+# ENHANCED MESSAGE HANDLING
+# -----------------------------------------------------------------------------
+def handle_message(user_msg_str, chat_data, temperature, max_tokens):
+    """Enhanced message handling with status indicators"""
+    if not user_msg_str.strip():
+        st.warning("No message entered. Please type something first.")
+        return False
+        
+    with st.status("Processing message...", expanded=True) as status:
+        # Add user message
+        chat_data["messages"].append(create_message("user", user_msg_str))
+        
+        # Call Claude with progress indication
+        status.update(label="Waiting for Claude's response...")
+        client = get_bedrock_client()
+        if client:
+            try:
+                ans_text, ans_think = invoke_claude(client, chat_data, temperature, max_tokens)
+                chat_data["messages"].append(
+                    create_message("assistant", ans_text, ans_think)
+                )
+                status.update(label="Response received!", state="complete")
+                return True
+            except Exception as e:
+                st.error(f"Error getting response: {str(e)}")
+                status.update(label="Error occurred", state="error")
+                return False
+    return False
+
+# -----------------------------------------------------------------------------
 # MAIN LAYOUT
 # -----------------------------------------------------------------------------
 col_chat, col_settings = st.columns([2,1], gap="large")
 
 with col_settings:
-    st.title("Claude Chat (No Rerun)")
+    st.title("Claude Chat (Enhanced)")
+
+    # Refresh Control
+    st.subheader("Refresh Control")
+    refresh_col1, refresh_col2 = st.columns([3, 1])
+    with refresh_col1:
+        if st.button(
+            "↻ Refresh Chat",
+            disabled=not should_update(),
+            help="Refresh chat (available every 2 seconds)"
+        ):
+            st.rerun()
+    with refresh_col2:
+        if not should_update():
+            time_diff = (datetime.now() - st.session_state.refresh_state["last_update"]).seconds
+            st.write(f"Wait {2-time_diff}s")
+    
+    st.session_state.refresh_state["auto_refresh"] = st.toggle(
+        "Enable auto-refresh",
+        value=st.session_state.refresh_state.get("auto_refresh", False),
+        help="Toggle automatic chat updates"
+    )
 
     # Switch conversation
     chat_keys = list(st.session_state.chats.keys())
@@ -388,9 +432,7 @@ with col_settings:
     with c2:
         if st.button("Load Chat"):
             loaded_data = load_chat_from_s3(st.session_state.current_chat)
-            if loaded_data is None:
-                st.warning("No record in S3 for that name.")
-            else:
+            if loaded_data:
                 st.session_state.chats[st.session_state.current_chat] = loaded_data
                 st.success("Loaded conversation from S3.")
 
@@ -409,16 +451,8 @@ with col_settings:
     if st.button("Clear Current Chat"):
         chat_data["messages"] = []
 
-    # "Update Conversation" - to see newly appended messages
-    if st.button("Update Conversation"):
-        # This simply re-renders the UI with any new messages
-        st.success("Conversation updated! Scroll down on the left to see new messages if any.")
-
-
 with col_chat:
     st.header(f"Conversation: {st.session_state.current_chat}")
-
-    st.write("**Instructions**: Type your message below, click 'Send Message', then press 'Update Conversation' to see Claude's reply appended in the chat. (No auto-refresh)")
 
     # Chat display
     st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
@@ -427,7 +461,6 @@ with col_chat:
         st.markdown(f"<div class='{bubble_class}'>{msg['content']}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='timestamp'>{msg.get('timestamp','')}</div>", unsafe_allow_html=True)
 
-        # Show chain-of-thought if assistant + user toggled + we have thinking
         if msg["role"]=="assistant" and st.session_state.show_thinking and msg.get("thinking"):
             with st.expander("Chain-of-Thought"):
                 st.markdown(
@@ -436,36 +469,26 @@ with col_chat:
                 )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Text area for user input
+    # Message input with enhanced handling
     st.subheader("Type Your Message")
     st.session_state.user_input_text = st.text_area(
         "Message",
-        value=st.session_state.user_input_text
+        value=st.session_state.user_input_text,
+        key="message_input"
     )
 
     if st.button("Send Message"):
-        user_msg_str = st.session_state.user_input_text.strip()
-        if user_msg_str:
-            # 1) Add user message
-            chat_data["messages"].append({
-                "role": "user",
-                "content": user_msg_str,
-                "thinking": "",
-                "timestamp": datetime.now().strftime("%I:%M %p")
-            })
+        if handle_message(
+            st.session_state.user_input_text,
+            chat_data,
+            temperature,
+            max_tokens
+        ):
+            st.session_state.user_input_text = ""  # Clear input only on success
+            if st.session_state.refresh_state["auto_refresh"]:
+                st.rerun()
 
-            # 2) Call Claude
-            client = get_bedrock_client()
-            if client:
-                ans_text, ans_think = invoke_claude(client, chat_data, temperature, max_tokens)
-                chat_data["messages"].append({
-                    "role": "assistant",
-                    "content": ans_text,
-                    "thinking": ans_think,
-                    "timestamp": datetime.now().strftime("%I:%M %p")
-                })
-
-            st.session_state.user_input_text = ""  # Clear the input
-            st.info("Message sent. Click 'Update Conversation' in the right column to see the new reply.")
-        else:
-            st.warning("No message entered. Please type something first.")
+# Auto-refresh handling
+if st.session_state.refresh_state["auto_refresh"] and should_update():
+    time.sleep(2)  # Prevent too frequent updates
+    st.rerun()
