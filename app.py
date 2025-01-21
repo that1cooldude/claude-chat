@@ -292,7 +292,7 @@ def create_message(role, content, thinking=""):
 # --------------------------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------------------------
-st.title("Claude Chat (Enhanced, Single-File)")
+st.title("Claude Chat (Derek Breese)")
 
 all_chat_names = list(st.session_state.chats.keys())
 chat_choice = st.selectbox(
