@@ -6,80 +6,83 @@ from datetime import datetime
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# -------------------------------------------------------------------
-# CONFIG (Use st.secrets or fill in your environment)
-# -------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# BASIC CONFIG
+# ----------------------------------------------------------------------
 AWS_REGION = st.secrets.get("AWS_DEFAULT_REGION", "us-east-2")
 S3_BUCKET_NAME = st.secrets.get("S3_BUCKET_NAME", "my-llm-chats-bucket")
 
-# Use the Claude inference profile of your choice:
+# Use your Anthropic Claude inference profile ARN:
 MODEL_ARN = (
     "arn:aws:bedrock:us-east-2:127214158930:"
     "inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 )
 
 st.set_page_config(
-    page_title="Claude Chat (No System Role)",
+    page_title="Claude Chat (Docs + Tools)",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# -------------------------------------------------------------------
-# CSS
-# -------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# SOME CSS
+# ----------------------------------------------------------------------
 st.markdown("""
 <style>
-    .thinking-box {
-        background-color: #1e1e2e; 
-        border-left: 3px solid #ffd700; 
-        padding: 10px; 
-        margin-top: 10px; 
-        font-style: italic;
-        border-radius: 5px;
-    }
-    .chat-bubble {
-        margin: 15px 0;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-    .assistant-bubble {
-        background-color: #36393f;
-    }
-    .user-bubble {
-        background-color: #2e3136;
-    }
-    .msg-timestamp {
-        font-size: 0.8em;
-        color: rgba(255,255,255,0.5);
-    }
+.chat-bubble {
+    margin: 15px 0;
+    padding: 15px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.1);
+}
+.assistant-bubble {
+    background-color: #36393f;
+}
+.user-bubble {
+    background-color: #2e3136;
+}
+.thinking-box {
+    background-color: #1e1e2e;
+    border-left: 3px solid #ffd700;
+    padding: 10px;
+    margin-top: 10px;
+    font-style: italic;
+    border-radius: 5px;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------------------------------------------
-# State Initialization
-# -------------------------------------------------------------------
-def init_session_state():
+# ----------------------------------------------------------------------
+# SESSION STATE
+# ----------------------------------------------------------------------
+def init_session():
     if "messages" not in st.session_state:
+        # Entire conversation stored here
         st.session_state.messages = []
-    if "show_thinking" not in st.session_state:
-        st.session_state.show_thinking = False
+    if "docs" not in st.session_state:
+        # Loaded docs from S3: { "DocName": "DocContent", ... }
+        st.session_state.docs = {}
+    if "selected_docs" not in st.session_state:
+        # Which docs to include in context
+        st.session_state.selected_docs = []
     if "force_thinking" not in st.session_state:
         st.session_state.force_thinking = False
+    if "show_thinking" not in st.session_state:
+        st.session_state.show_thinking = False
     if "editing_idx" not in st.session_state:
         st.session_state.editing_idx = None
 
-init_session_state()
+init_session()
 
-# -------------------------------------------------------------------
-# AWS Clients
-# -------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# AWS CLIENTS
+# ----------------------------------------------------------------------
 @st.cache_resource
 def get_bedrock_client():
     try:
         return boto3.client(
-            "bedrock-runtime",
+            service_name="bedrock-runtime",
             region_name=AWS_REGION,
             aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
             aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
@@ -92,7 +95,7 @@ def get_bedrock_client():
 def get_s3_client():
     try:
         return boto3.client(
-            "s3",
+            service_name="s3",
             region_name=AWS_REGION,
             aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
             aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
@@ -101,15 +104,15 @@ def get_s3_client():
         st.error(f"Error creating S3 client: {e}")
         return None
 
-# -------------------------------------------------------------------
-# S3 Save/Load
-# -------------------------------------------------------------------
-def save_chat_to_s3(chat_name, messages):
+# ----------------------------------------------------------------------
+# S3 CHAT PERSISTENCE
+# ----------------------------------------------------------------------
+def save_chat(chat_name, messages):
     s3 = get_s3_client()
     if not s3:
         return
-    data = {"messages": messages}
     key = f"conversations/{chat_name}.json"
+    data = {"messages": messages}
     try:
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
@@ -117,11 +120,11 @@ def save_chat_to_s3(chat_name, messages):
             Body=json.dumps(data, indent=2),
             ContentType="application/json"
         )
-        st.success(f"Chat '{chat_name}' saved: s3://{S3_BUCKET_NAME}/{key}")
+        st.success(f"Saved chat '{chat_name}' to s3://{S3_BUCKET_NAME}/{key}")
     except ClientError as e:
-        st.error(f"Error saving chat: {e}")
+        st.error(f"Save error: {e}")
 
-def load_chat_from_s3(chat_name):
+def load_chat(chat_name):
     s3 = get_s3_client()
     if not s3:
         return None
@@ -134,11 +137,11 @@ def load_chat_from_s3(chat_name):
     except ClientError as e:
         if e.response["Error"]["Code"] == "NoSuchKey":
             return None
-        st.error(f"Error loading chat: {e}")
+        st.error(f"Load error: {e}")
         return None
 
 def list_saved_chats():
-    """List existing chat files in s3://bucket/conversations/, returning base names."""
+    """List chat files under 'conversations/' in S3."""
     s3 = get_s3_client()
     if not s3:
         return []
@@ -148,24 +151,42 @@ def list_saved_chats():
             return []
         chat_names = []
         for item in objs["Contents"]:
-            key = item["Key"]  # e.g. "conversations/SomeChat.json"
+            key = item["Key"]
             if key.endswith(".json"):
-                # strip prefix, strip extension
-                base = key.replace("conversations/", "").replace(".json", "")
-                chat_names.append(base)
+                name = key.replace("conversations/", "").replace(".json","")
+                chat_names.append(name)
         return sorted(chat_names)
     except ClientError as e:
-        st.error(f"Error listing chats: {e}")
+        st.error(f"List chats error: {e}")
         return []
 
-# -------------------------------------------------------------------
-# Claude Logic
-# -------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# DOCUMENTS (S3) - Simple approach (no chunking/embedding)
+# ----------------------------------------------------------------------
+def load_doc_from_s3(doc_name, s3_key):
+    """Load a text doc from s3://bucket/<s3_key> into st.session_state.docs[doc_name]."""
+    s3 = get_s3_client()
+    if not s3:
+        return
+    try:
+        resp = s3.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+        text_data = resp["Body"].read().decode("utf-8")
+        st.session_state.docs[doc_name] = text_data
+        st.success(f"Loaded doc '{doc_name}' from s3://{S3_BUCKET_NAME}/{s3_key}")
+    except ClientError as e:
+        st.error(f"Doc load error: {e}")
+
+# ----------------------------------------------------------------------
+# CLAUDE INVOCATION
+# ----------------------------------------------------------------------
 def approximate_tokens(text):
     return len(text.split())
 
 def total_token_usage(messages):
-    return sum(approximate_tokens(m["content"]) for m in messages)
+    total = 0
+    for m in messages:
+        total += approximate_tokens(m["content"])
+    return total
 
 def create_message(role, content, thinking=""):
     return {
@@ -175,37 +196,49 @@ def create_message(role, content, thinking=""):
         "timestamp": datetime.now().strftime("%I:%M %p")
     }
 
-def build_bedrock_messages(messages, force_thinking):
+def build_bedrock_messages(messages, selected_docs, force_thinking):
     """
-    We only use 'user' and 'assistant' roles. 
-    If force_thinking is True, we prepend a user message instructing Claude to show chain-of-thought.
+    We only use roles "user" & "assistant" to avoid schema issues.
+    - If force_thinking is True, we prepend a user message instructing chain-of-thought usage.
+    - For each doc in selected_docs, we add a user message: "DOC <doc_name>: <content>"
+      so Claude sees that doc as context.
+    - Then we add all user/assistant messages.
     """
     bedrock_msgs = []
-    # If user toggled "force chain-of-thought," add an initial user message
+
+    # 1) Force chain-of-thought if toggled
     if force_thinking:
         bedrock_msgs.append({
             "role": "user",
             "content": [
-                {"type":"text","text": "You MUST show your chain-of-thought in <thinking>...</thinking> tags."}
+                {"type": "text", "text": "You MUST use <thinking>...</thinking> to show chain-of-thought reasoning."}
             ]
         })
 
-    # Then add the actual conversation
+    # 2) Include selected docs as user messages
+    for doc_name in selected_docs:
+        doc_text = st.session_state.docs.get(doc_name, "")
+        if doc_text.strip():
+            doc_content = f"DOC {doc_name}:\n{doc_text}"
+            bedrock_msgs.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": doc_content}
+                ]
+            })
+
+    # 3) Actual conversation
     for msg in messages:
         bedrock_msgs.append({
-            "role": msg["role"],
+            "role": msg["role"],  # user or assistant
             "content": [{"type": "text", "text": msg["content"]}]
         })
     return bedrock_msgs
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=2, max=6))
-def invoke_claude(client, messages, force_thinking, temperature, max_tokens):
-    """
-    Multi-turn call to Claude with optional forced chain-of-thought. 
-    We'll parse out <thinking> from the combined text.
-    """
+def invoke_claude(client, messages, selected_docs, force_thinking, temperature, max_tokens):
     with st.spinner("Claude is thinking..."):
-        payload = build_bedrock_messages(messages, force_thinking)
+        body_msgs = build_bedrock_messages(messages, selected_docs, force_thinking)
         resp = client.invoke_model(
             modelId=MODEL_ARN,
             contentType="application/json",
@@ -216,98 +249,108 @@ def invoke_claude(client, messages, force_thinking, temperature, max_tokens):
                 "temperature": temperature,
                 "top_k": 250,
                 "top_p": 0.999,
-                "messages": payload
+                "messages": body_msgs
             })
         )
-        body = json.loads(resp["body"].read())
-        if "content" in body:
-            merged = "\n".join(seg["text"] for seg in body["content"] if seg["type"]=="text")
-            # Extract <thinking> chunk
+        result = json.loads(resp["body"].read())
+        if "content" in result:
+            combined_text = "\n".join(seg["text"] for seg in result["content"] if seg["type"] == "text")
+            # extract <thinking> if present
             thinking = ""
-            match = re.search(r"<thinking>(.*?)</thinking>", merged, re.DOTALL)
+            match = re.search(r"<thinking>(.*?)</thinking>", combined_text, re.DOTALL)
             if match:
                 thinking = match.group(1).strip()
-                merged = re.sub(r"<thinking>.*?</thinking>", "", merged, flags=re.DOTALL).strip()
-            return merged, thinking
-        return ("No response returned by Claude.", "")
+                combined_text = re.sub(r"<thinking>.*?</thinking>", "", combined_text, flags=re.DOTALL).strip()
+            return combined_text, thinking
+        return "No response from Claude.", ""
 
-# -------------------------------------------------------------------
-# SIDEBAR
-# -------------------------------------------------------------------
-st.title("Claude Chat (No System Role)")
+# ----------------------------------------------------------------------
+# SIDEBAR CONTROLS
+# ----------------------------------------------------------------------
+st.title("Claude Chat (Docs + Tools, Minimal UI)")
 
-# 1) Toggle for chain-of-thought
+# Tools: forcing chain-of-thought
 st.session_state.force_thinking = st.checkbox(
     "Force Chain-of-Thought",
-    value=st.session_state.force_thinking,
-    help="If checked, we tell Claude it MUST show reasoning in <thinking> tags."
+    value=st.session_state.force_thinking
 )
 
-# 2) Show/Hide chain-of-thought
+# Tools: show/hide chain-of-thought
 st.session_state.show_thinking = st.checkbox(
-    "Show Thinking",
-    value=st.session_state.show_thinking,
-    help="If on, any extracted <thinking> text is displayed for assistant messages."
+    "Show Chain-of-Thought",
+    value=st.session_state.show_thinking
 )
 
-# 3) Model Settings
+# Model settings
 temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
 max_tokens = st.slider("Max Tokens", 100, 4096, 1000)
 
-# 4) List saved chats from S3
-saved_chats = list_saved_chats()
-st.subheader("Load a Saved Chat")
-if saved_chats:
-    chosen_chat = st.selectbox(
-        "Choose from existing S3 chat files:",
-        options=saved_chats
+# Document Manager
+st.subheader("Documents Manager")
+doc_name_input = st.text_input("Name for the doc (like 'Doc1')", value="")
+doc_key_input = st.text_input("S3 Key for doc", value="")
+if st.button("Load Doc from S3"):
+    if doc_name_input.strip() and doc_key_input.strip():
+        load_doc_from_s3(doc_name_input, doc_key_input)
+
+# Choose which docs to attach to conversation
+if st.session_state.docs:
+    all_doc_names = sorted(st.session_state.docs.keys())
+    st.session_state.selected_docs = st.multiselect(
+        "Select docs to attach to conversation",
+        options=all_doc_names,
+        default=st.session_state.selected_docs
     )
+else:
+    st.write("No docs loaded yet.")
+
+# Save/Load Chats
+st.subheader("Saved Chats in S3")
+all_chat_files = list_saved_chats()
+if all_chat_files:
+    chosen_chat = st.selectbox("Pick a saved chat", all_chat_files)
     if st.button("Load Selected Chat"):
-        loaded_data = load_chat_from_s3(chosen_chat)
-        if loaded_data is None:
-            st.warning("No chat found or error loading.")
+        loaded = load_chat(chosen_chat)
+        if loaded is None:
+            st.warning("That chat does not exist.")
         else:
-            st.session_state.messages = loaded_data
+            st.session_state.messages = loaded
             st.success(f"Loaded chat '{chosen_chat}' from S3.")
             st.rerun()
 else:
-    st.write("No saved chats found in S3, or error listing them.")
+    st.write("(No saved chats found or error listing them)")
 
-# 5) Save/Load by name
-st.subheader("Save/Load By Name")
-chat_name = st.text_input("Chat Name", value="Default")
-cols = st.columns(2)
-with cols[0]:
+chat_name = st.text_input("Chat Name to Save/Load", value="Default Chat")
+col_s, col_l = st.columns(2)
+with col_s:
     if st.button("Save Chat"):
-        save_chat_to_s3(chat_name, st.session_state.messages)
-with cols[1]:
+        save_chat(chat_name, st.session_state.messages)
+with col_l:
     if st.button("Load Chat"):
-        loaded_data = load_chat_from_s3(chat_name)
+        loaded_data = load_chat(chat_name)
         if loaded_data is None:
             st.warning("No chat found with that name.")
         else:
             st.session_state.messages = loaded_data
-            st.success(f"Loaded chat '{chat_name}' from S3.")
+            st.success(f"Loaded '{chat_name}' from S3.")
             st.rerun()
 
-# 6) Clear
 if st.button("Clear All Messages"):
     st.session_state.messages = []
     st.rerun()
 
-# 7) Token usage
 tk_usage = total_token_usage(st.session_state.messages)
-st.write(f"Approx. Token Usage: **{tk_usage}**")
+st.write(f"Approx Token Usage: **{tk_usage}**")
 
-# -------------------------------------------------------------------
-# MAIN Chat Display
-# -------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# MAIN CHAT UI
+# ----------------------------------------------------------------------
 for i, msg in enumerate(st.session_state.messages):
-    style_class = "assistant-bubble" if msg["role"]=="assistant" else "user-bubble"
+    style = "assistant-bubble" if msg["role"]=="assistant" else "user-bubble"
     with st.chat_message(msg["role"]):
-        if msg["role"]=="user" and st.session_state.editing_idx == i:
-            # Editing mode
-            edited_text = st.text_area("Edit your message", msg["content"], key=f"edit_{i}")
+        if msg["role"] == "user" and st.session_state.editing_idx == i:
+            # editing user message
+            edited_text = st.text_area("Edit your message", value=msg["content"], key=f"edit_{i}")
             c1, c2 = st.columns([1,1])
             with c1:
                 if st.button("Save Edit", key=f"save_{i}"):
@@ -319,50 +362,42 @@ for i, msg in enumerate(st.session_state.messages):
                     st.session_state.editing_idx = None
                     st.rerun()
         else:
-            # Normal display
-            st.markdown(
-                f"<div class='chat-bubble {style_class}'>{msg['content']}</div>",
-                unsafe_allow_html=True
-            )
-            st.caption(f"{msg.get('timestamp','')}")
+            # normal bubble display
+            st.markdown(f"<div class='chat-bubble {style}'>{msg['content']}</div>", unsafe_allow_html=True)
+            st.caption(msg.get("timestamp",""))
 
-            # If assistant & user wants to see thinking
             if msg["role"]=="assistant" and st.session_state.show_thinking and msg.get("thinking"):
                 st.markdown(f"<div class='thinking-box'>{msg['thinking']}</div>", unsafe_allow_html=True)
 
-            # For user messages, show Edit/Delete
+            # user messages can be edited/deleted
             if msg["role"]=="user":
-                col1, col2, _ = st.columns([1,1,8])
-                with col1:
+                cc1, cc2, _ = st.columns([1,1,8])
+                with cc1:
                     if st.button("✏️ Edit", key=f"editbtn_{i}"):
                         st.session_state.editing_idx = i
                         st.rerun()
-                with col2:
+                with cc2:
                     if st.button("🗑️ Del", key=f"delbtn_{i}"):
                         st.session_state.messages.pop(i)
                         st.rerun()
 
-# -------------------------------------------------------------------
-# BOTTOM INPUT
-# -------------------------------------------------------------------
-prompt = st.chat_input("Your message to Claude...")
-if prompt:
-    # Add user message
-    user_msg = create_message("user", prompt)
-    st.session_state.messages.append(user_msg)
-
-    # Get Claude response
+# ----------------------------------------------------------------------
+# BOTTOM CHAT INPUT
+# ----------------------------------------------------------------------
+user_input = st.chat_input("Your message to Claude...")
+if user_input:
+    # add user message
+    st.session_state.messages.append(create_message("user", user_input))
+    # invoke Claude
     client = get_bedrock_client()
     if client:
-        ans_text, think_text = invoke_claude(
-            client,
-            st.session_state.messages,
-            st.session_state.force_thinking,
-            temperature,
-            max_tokens
+        ans, think = invoke_claude(
+            client=client,
+            messages=st.session_state.messages,
+            selected_docs=st.session_state.selected_docs,
+            force_thinking=st.session_state.force_thinking,
+            temperature=temperature,
+            max_tokens=max_tokens
         )
-        st.session_state.messages.append(
-            create_message("assistant", ans_text, think_text)
-        )
-
+        st.session_state.messages.append(create_message("assistant", ans, think))
     st.rerun()
