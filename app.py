@@ -23,13 +23,7 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# DISCLAIMER
-# -----------------------------------------------------------------------------
-# 1) Automatic refresh is now added as an optional feature.
-# 2) The chain-of-thought might not appear if Claude doesn't produce <thinking> tags.
-
-# -----------------------------------------------------------------------------
-# BASIC CSS
+# STYLING
 # -----------------------------------------------------------------------------
 st.markdown("""
 <style>
@@ -71,6 +65,19 @@ st.markdown("""
     margin-top: 2px;
     text-align: right;
 }
+.thinking-expander {
+    background-color: #333;
+    border-left: 3px solid #ffd700;
+    border-radius: 5px;
+    padding: 8px;
+    margin-top: 4px;
+}
+.thinking-text {
+    color: #ffd700;
+    font-style: italic;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -89,14 +96,8 @@ def init_session():
     if "current_chat" not in st.session_state:
         st.session_state.current_chat = "Default"
 
-    if "show_thinking" not in st.session_state:
-        st.session_state.show_thinking = False
-
     if "user_input_text" not in st.session_state:
         st.session_state.user_input_text = ""
-
-    if "auto_refresh_enabled" not in st.session_state:
-        st.session_state.auto_refresh_enabled = False
 
 init_session()
 
@@ -186,22 +187,10 @@ def list_chats_s3():
         return []
 
 # -----------------------------------------------------------------------------
-# TOKEN CALC
+# INVOKE CLAUDE
 # -----------------------------------------------------------------------------
-def approximate_tokens(text: str) -> int:
-    return len(text.split())
-
-def total_token_usage(chat_data: dict):
-    total = 0
-    for m in chat_data["messages"]:
-        total += approximate_tokens(m["content"])
-    total += approximate_tokens(chat_data.get("system_prompt",""))
-    return total
-
-# -----------------------------------------------------------------------------
-# BUILD BEDROCK MSGS
-# -----------------------------------------------------------------------------
-def build_bedrock_messages(chat_data):
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(min=2, max=6))
+def invoke_claude(client, chat_data, temperature, max_tokens):
     bedrock_msgs = []
 
     if chat_data.get("force_thinking", False):
@@ -224,14 +213,7 @@ def build_bedrock_messages(chat_data):
                 {"type": "text", "text": msg["content"]}
             ]
         })
-    return bedrock_msgs
 
-# -----------------------------------------------------------------------------
-# INVOKE CLAUDE
-# -----------------------------------------------------------------------------
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(min=2, max=6))
-def invoke_claude(client, chat_data, temperature, max_tokens):
-    bedrock_msgs = build_bedrock_messages(chat_data)
     resp = client.invoke_model(
         modelId=MODEL_ARN,
         contentType="application/json",
@@ -245,6 +227,7 @@ def invoke_claude(client, chat_data, temperature, max_tokens):
             "messages": bedrock_msgs
         })
     )
+
     body = json.loads(resp["body"].read())
     if "content" in body:
         text_bits = []
@@ -310,26 +293,35 @@ with col_settings:
         value=chat_data.get("system_prompt", "")
     )
 
-    st.subheader("Auto-Refresh")
-    st.session_state.auto_refresh_enabled = st.checkbox(
-        "Enable Auto-Refresh (every 10 sec)",
-        value=st.session_state.auto_refresh_enabled
-    )
+    st.subheader("Save and Load Chats")
+    if st.button("Save Chat"):
+        save_chat_to_s3(st.session_state.current_chat, chat_data)
 
-    if st.session_state.auto_refresh_enabled:
-        st.markdown("<div style='color:green'>Auto-refresh is enabled.</div>", unsafe_allow_html=True)
+    if st.button("Load Chat"):
+        loaded_data = load_chat_from_s3(st.session_state.current_chat)
+        if loaded_data is None:
+            st.warning("No record in S3 for that name.")
+        else:
+            st.session_state.chats[st.session_state.current_chat] = loaded_data
+            st.success("Loaded conversation from S3.")
 
 with col_chat:
     st.header(f"Conversation: {st.session_state.current_chat}")
 
-    if st.session_state.auto_refresh_enabled:
-        st.experimental_autorefresh(interval=10 * 1000)
+    st.experimental_autorefresh(interval=10 * 1000)
 
     st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
     for i, msg in enumerate(chat_data["messages"]):
         bubble_class = "assistant-bubble" if msg["role"] == "assistant" else "user-bubble"
         st.markdown(f"<div class='{bubble_class}'>{msg['content']}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='timestamp'>{msg.get('timestamp', '')}</div>", unsafe_allow_html=True)
+
+        if msg["role"] == "assistant" and msg.get("thinking"):
+            with st.expander("Chain-of-Thought"):
+                st.markdown(
+                    f"<div class='thinking-expander'><span class='thinking-text'>{msg['thinking']}</span></div>",
+                    unsafe_allow_html=True
+                )
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.subheader("Send a Message")
@@ -341,7 +333,18 @@ with col_chat:
                 "content": user_input.strip(),
                 "timestamp": datetime.now().strftime("%I:%M %p")
             })
+
+            client = get_bedrock_client()
+            if client:
+                ans_text, ans_think = invoke_claude(client, chat_data, temperature, max_tokens)
+                chat_data["messages"].append({
+                    "role": "assistant",
+                    "content": ans_text,
+                    "thinking": ans_think,
+                    "timestamp": datetime.now().strftime("%I:%M %p")
+                })
+
             st.session_state.user_input_text = ""
-            st.success("Message sent!")
+            st.success("Message sent and response received!")
         else:
             st.warning("Cannot send an empty message.")
