@@ -3,12 +3,11 @@ import boto3
 import json
 import re
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # -----------------------------------------------------------------------------
-# CONFIGURATION
+# CONFIG
 # -----------------------------------------------------------------------------
 AWS_REGION = st.secrets.get("AWS_DEFAULT_REGION", "us-east-2")
 S3_BUCKET_NAME = st.secrets.get("S3_BUCKET_NAME", "my-llm-chats-bucket")
@@ -25,357 +24,391 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# CSS STYLING
+# CSS
 # -----------------------------------------------------------------------------
 st.markdown("""
 <style>
-.thinking-box {
-    background-color: #1E1E1E;
-    border-left: 3px solid #FFD700;
-    padding: 10px;
-    margin: 10px 0;
+.chat-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+.user-bubble {
+    background-color: #2e3136;
+    color: #fff;
+    padding: 12px 16px;
+    border-radius: 10px;
+    max-width: 80%;
+    align-self: flex-end;
+    word-wrap: break-word;
+    margin-bottom: 4px;
+}
+.assistant-bubble {
+    background-color: #454a50;
+    color: #fff;
+    padding: 12px 16px;
+    border-radius: 10px;
+    max-width: 80%;
+    align-self: flex-start;
+    word-wrap: break-word;
+    margin-bottom: 4px;
+}
+.timestamp {
+    font-size: 0.75rem;
+    color: rgba(255,255,255,0.5);
+    margin-top: 2px;
+    text-align: right;
+}
+.thinking-expander {
+    background-color: #333;
+    border-left: 3px solid #ffd700;
     border-radius: 5px;
+    padding: 8px;
+    margin-top: 4px;
 }
-.message-timestamp {
-    color: #666;
-    font-size: 0.8em;
-    margin-top: 5px;
+.thinking-text {
+    color: #ffd700;
+    font-style: italic;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
-.stButton > button {
-    width: 100%;
-    margin-bottom: 10px;
+div[data-testid="stExpander"] {
+    border: none;
+    box-shadow: none;
 }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# SESSION STATE INITIALIZATION
+# SESSION STATE
 # -----------------------------------------------------------------------------
-def init_session_state():
-    defaults = {
-        "messages": [],
-        "conversations": {},
-        "current_conversation": "Default",
-        "system_prompt": "You are Claude. Include detailed chain-of-thought when appropriate.",
-        "temperature": 0.7,
-        "max_tokens": 1000,
-        "show_thinking": True,
-        "force_thinking": True
-    }
-    
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-            
-    # Initialize default conversation if needed
-    if "Default" not in st.session_state.conversations:
-        st.session_state.conversations["Default"] = {
-            "messages": [],
-            "system_prompt": st.session_state.system_prompt,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def init_session():
+    if "chats" not in st.session_state:
+        st.session_state.chats = {
+            "Default": {
+                "messages": [],
+                "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
+                "force_thinking": False
+            }
         }
+    if "current_chat" not in st.session_state:
+        st.session_state.current_chat = "Default"
+    if "show_thinking" not in st.session_state:
+        st.session_state.show_thinking = True
+    if "processing_message" not in st.session_state:
+        st.session_state.processing_message = False
+    if "error_count" not in st.session_state:
+        st.session_state.error_count = 0
 
-init_session_state()
+init_session()
+
+def get_current_chat_data():
+    return st.session_state.chats[st.session_state.current_chat]
 
 # -----------------------------------------------------------------------------
 # AWS CLIENTS
 # -----------------------------------------------------------------------------
 @st.cache_resource
-def get_aws_clients():
-    """Create and cache AWS clients."""
+def get_bedrock_client():
     try:
-        bedrock = boto3.client(
+        return boto3.client(
             "bedrock-runtime",
             region_name=AWS_REGION,
             aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
             aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
         )
-        s3 = boto3.client(
+    except Exception as e:
+        st.error(f"Error creating Bedrock client: {e}")
+        return None
+
+@st.cache_resource
+def get_s3_client():
+    try:
+        return boto3.client(
             "s3",
             region_name=AWS_REGION,
             aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
             aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
         )
-        return bedrock, s3
     except Exception as e:
-        st.error(f"Failed to initialize AWS clients: {str(e)}")
-        return None, None
+        st.error(f"Error creating S3 client: {e}")
+        return None
 
 # -----------------------------------------------------------------------------
 # S3 OPERATIONS
 # -----------------------------------------------------------------------------
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def save_conversation_to_s3(conversation_name: str, data: dict) -> bool:
-    """Save conversation data to S3 with retry logic."""
-    _, s3 = get_aws_clients()
+def save_chat_to_s3(chat_name: str, chat_data: dict) -> bool:
+    s3 = get_s3_client()
     if not s3:
         return False
-        
     try:
-        key = f"conversations/{conversation_name}.json"
+        key = f"conversations/{chat_name}.json"
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
             Key=key,
-            Body=json.dumps(data, indent=2),
+            Body=json.dumps(chat_data, indent=2),
             ContentType="application/json"
         )
         return True
-    except ClientError as e:
-        st.error(f"Failed to save conversation: {str(e)}")
+    except Exception as e:
+        st.error(f"Save error: {e}")
         return False
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def list_s3_conversations() -> List[str]:
-    """List available conversations in S3."""
-    _, s3 = get_aws_clients()
-    if not s3:
-        return []
-        
-    try:
-        response = s3.list_objects_v2(
-            Bucket=S3_BUCKET_NAME,
-            Prefix="conversations/"
-        )
-        conversations = []
-        if "Contents" in response:
-            for item in response["Contents"]:
-                name = item["Key"].split("/")[-1].replace(".json", "")
-                if name:
-                    conversations.append(name)
-        return sorted(conversations)
-    except ClientError as e:
-        st.error(f"Failed to list conversations: {str(e)}")
-        return []
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def load_conversation_from_s3(conversation_name: str) -> Optional[dict]:
-    """Load conversation data from S3 with retry logic."""
-    _, s3 = get_aws_clients()
+def load_chat_from_s3(chat_name: str) -> dict:
+    s3 = get_s3_client()
     if not s3:
         return None
-        
     try:
-        key = f"conversations/{conversation_name}.json"
-        response = s3.get_object(Bucket=S3_BUCKET_NAME, Key=key)
-        return json.loads(response["Body"].read().decode("utf-8"))
+        key = f"conversations/{chat_name}.json"
+        resp = s3.get_object(Bucket=S3_BUCKET_NAME, Key=key)
+        return json.loads(resp["Body"].read().decode("utf-8"))
     except ClientError as e:
         if e.response["Error"]["Code"] != "NoSuchKey":
-            st.error(f"Failed to load conversation: {str(e)}")
+            st.error(f"Load error: {e}")
         return None
 
-# -----------------------------------------------------------------------------
-# CLAUDE INTERACTION
-# -----------------------------------------------------------------------------
-def extract_thinking(response: str) -> Tuple[str, str]:
-    """Extract thinking process from Claude's response."""
-    thinking = ""
-    content = response
-    
-    thinking_match = re.search(r"<thinking>(.*?)</thinking>", response, re.DOTALL)
-    if thinking_match:
-        thinking = thinking_match.group(1).strip()
-        content = re.sub(r"<thinking>.*?</thinking>", "", response, flags=re.DOTALL).strip()
-    
-    return content, thinking
-
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=4, max=10))
-def get_claude_response(messages: List[dict], system_prompt: str, temperature: float, max_tokens: int) -> Tuple[str, str]:
-    """Get response from Claude with retry logic."""
-    bedrock, _ = get_aws_clients()
-    if not bedrock:
-        return "Error: Could not connect to Claude.", ""
-        
+@st.cache_data(ttl=300)
+def list_s3_chats() -> list:
+    s3 = get_s3_client()
+    if not s3:
+        return []
     try:
-        # Prepare messages with system prompt
-        formatted_messages = [{"role": "system", "content": system_prompt}]
-        formatted_messages.extend(messages)
-        
-        if st.session_state.force_thinking:
-            formatted_messages.append({
-                "role": "user",
-                "content": "Please include your chain-of-thought in <thinking> tags."
-            })
-        
-        response = bedrock.invoke_model(
+        resp = s3.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix="conversations/")
+        if "Contents" not in resp:
+            return []
+        return sorted([
+            k["Key"].split("/")[-1].replace(".json","")
+            for k in resp["Contents"]
+            if k["Key"].endswith(".json")
+        ])
+    except Exception as e:
+        st.error(f"List error: {e}")
+        return []
+
+# -----------------------------------------------------------------------------
+# CLAUDE OPERATIONS
+# -----------------------------------------------------------------------------
+def build_messages(chat_data: dict) -> list:
+    messages = []
+    
+    if chat_data.get("force_thinking", False):
+        messages.append({
+            "role": "user",
+            "content": [{"type": "text", "text": "Please include chain-of-thought in <thinking>...</thinking> tags."}]
+        })
+    
+    sys_prompt = chat_data.get("system_prompt","").strip()
+    if sys_prompt:
+        messages.append({
+            "role": "user",
+            "content": [{"type": "text", "text": f"(System Prompt)\n{sys_prompt}"}]
+        })
+    
+    for msg in chat_data["messages"]:
+        messages.append({
+            "role": msg["role"],
+            "content": [{"type": "text", "text": msg["content"]}]
+        })
+    
+    return messages
+
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(min=2, max=6))
+def get_claude_response(chat_data: dict, temperature: float, max_tokens: int) -> tuple:
+    client = get_bedrock_client()
+    if not client:
+        raise Exception("Failed to initialize Bedrock client")
+    
+    messages = build_messages(chat_data)
+    try:
+        response = client.invoke_model(
             modelId=MODEL_ARN,
             body=json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": max_tokens,
                 "temperature": temperature,
-                "messages": formatted_messages
+                "messages": messages
             })
         )
         
         result = json.loads(response["body"].read())
-        content = result["content"][0]["text"]
-        return extract_thinking(content)
+        
+        if "content" not in result:
+            raise Exception("Invalid response format from Claude")
+            
+        # Combine all text segments
+        full_response = " ".join(
+            seg["text"] for seg in result["content"]
+            if seg.get("type") == "text"
+        ).strip()
+        
+        # Extract thinking process
+        thinking = ""
+        match = re.search(r"<thinking>(.*?)</thinking>", full_response, re.DOTALL)
+        if match:
+            thinking = match.group(1).strip()
+            full_response = re.sub(r"<thinking>.*?</thinking>", "", full_response, flags=re.DOTALL).strip()
+            
+        return full_response, thinking
         
     except Exception as e:
         st.error(f"Error getting Claude response: {str(e)}")
-        return "Error communicating with Claude.", ""
+        raise
 
 # -----------------------------------------------------------------------------
-# UI COMPONENTS
-# -----------------------------------------------------------------------------
-def render_message(message: dict):
-    """Render a single message with timestamp and thinking process."""
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
-        
-        # Show timestamp
-        st.markdown(
-            f"<div class='message-timestamp'>{message.get('timestamp', '')}</div>",
-            unsafe_allow_html=True
-        )
-        
-        # Show thinking process if available and enabled
-        if (message.get("thinking") and 
-            message["role"] == "assistant" and 
-            st.session_state.show_thinking):
-            with st.expander("💭 Thought Process"):
-                st.markdown(
-                    f"<div class='thinking-box'>{message['thinking']}</div>",
-                    unsafe_allow_html=True
-                )
-
-def get_current_conversation() -> dict:
-    """Get the current conversation data."""
-    return st.session_state.conversations[st.session_state.current_conversation]
-
-def create_new_conversation(name: str):
-    """Create a new conversation."""
-    if name and name not in st.session_state.conversations:
-        st.session_state.conversations[name] = {
-            "messages": [],
-            "system_prompt": st.session_state.system_prompt,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        st.session_state.current_conversation = name
-
-# -----------------------------------------------------------------------------
-# MAIN UI LAYOUT
+# MAIN UI
 # -----------------------------------------------------------------------------
 def main():
-    # Sidebar
-    with st.sidebar:
-        st.title("🛠️ Chat Settings")
+    col_chat, col_settings = st.columns([2,1], gap="large")
+    
+    # Settings Column
+    with col_settings:
+        st.title("Chat Settings")
         
-        # Model settings
-        st.subheader("Model Configuration")
-        st.session_state.temperature = st.slider(
-            "Temperature",
-            min_value=0.0,
-            max_value=1.0,
-            value=st.session_state.temperature,
-            step=0.1
+        # Conversation Management
+        st.subheader("Conversation")
+        chat_keys = list(st.session_state.chats.keys())
+        chosen_chat = st.selectbox(
+            "Select Conversation",
+            options=chat_keys,
+            index=chat_keys.index(st.session_state.current_chat)
         )
-        st.session_state.max_tokens = st.slider(
-            "Max Tokens",
-            min_value=100,
-            max_value=4096,
-            value=st.session_state.max_tokens,
-            step=100
+        if chosen_chat != st.session_state.current_chat:
+            st.session_state.current_chat = chosen_chat
+            
+        # Create New Chat
+        new_chat_name = st.text_input("New Chat Name")
+        if st.button("Create Chat") and new_chat_name:
+            if new_chat_name not in st.session_state.chats:
+                st.session_state.chats[new_chat_name] = {
+                    "messages": [],
+                    "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
+                    "force_thinking": True
+                }
+                st.session_state.current_chat = new_chat_name
+                st.rerun()
+                
+        chat_data = get_current_chat_data()
+        
+        # Model Settings
+        st.subheader("Model Settings")
+        temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
+        max_tokens = st.slider("Max Tokens", 100, 4096, 1000)
+        
+        # System Prompt
+        st.subheader("System Prompt")
+        chat_data["system_prompt"] = st.text_area(
+            "Instructions for Claude",
+            value=chat_data.get("system_prompt","")
         )
         
-        # Thinking process controls
+        # Thinking Settings
         st.subheader("Chain of Thought")
+        chat_data["force_thinking"] = st.checkbox(
+            "Request Thinking Process",
+            value=chat_data.get("force_thinking", True)
+        )
         st.session_state.show_thinking = st.checkbox(
             "Show Thinking Process",
             value=st.session_state.show_thinking
         )
-        st.session_state.force_thinking = st.checkbox(
-            "Force Thinking in Responses",
-            value=st.session_state.force_thinking
-        )
         
-        # System prompt
-        st.subheader("System Prompt")
-        new_prompt = st.text_area(
-            "System Instructions",
-            value=get_current_conversation()["system_prompt"],
-            height=100
-        )
-        if new_prompt != get_current_conversation()["system_prompt"]:
-            get_current_conversation()["system_prompt"] = new_prompt
+        # S3 Operations
+        st.subheader("Save/Load")
+        col1, col2 = st.columns(2)
         
-        # Conversation management
-        st.subheader("Conversation Management")
-        new_chat_name = st.text_input("New Conversation Name")
-        if st.button("Create New Conversation"):
-            create_new_conversation(new_chat_name)
-        
-        # S3 operations
-        st.subheader("S3 Operations")
-        if st.button("Save Current Conversation"):
-            if save_conversation_to_s3(
-                st.session_state.current_conversation,
-                get_current_conversation()
-            ):
-                st.success("Conversation saved successfully!")
-        
-        s3_conversations = list_s3_conversations()
-        if s3_conversations:
-            selected_s3_chat = st.selectbox(
-                "Load Conversation from S3",
-                ["Select..."] + s3_conversations
-            )
-            if selected_s3_chat != "Select..." and st.button("Load Selected"):
-                data = load_conversation_from_s3(selected_s3_chat)
+        with col1:
+            if st.button("Save Chat"):
+                if save_chat_to_s3(st.session_state.current_chat, chat_data):
+                    st.success("Chat saved!")
+                    
+        with col2:
+            if st.button("Load Chat"):
+                data = load_chat_from_s3(st.session_state.current_chat)
                 if data:
-                    st.session_state.conversations[selected_s3_chat] = data
-                    st.session_state.current_conversation = selected_s3_chat
-                    st.success(f"Loaded '{selected_s3_chat}' successfully!")
+                    st.session_state.chats[st.session_state.current_chat] = data
+                    st.success("Chat loaded!")
+                    st.rerun()
+                else:
+                    st.warning("No saved chat found.")
+                    
+        # S3 Chat List
+        saved_chats = list_s3_chats()
+        if saved_chats:
+            selected = st.selectbox("Load Saved Chat", ["Select..."] + saved_chats)
+            if selected != "Select..." and st.button("Load Selected"):
+                data = load_chat_from_s3(selected)
+                if data:
+                    st.session_state.chats[selected] = data
+                    st.session_state.current_chat = selected
+                    st.success(f"Loaded '{selected}'")
                     st.rerun()
         
-        if st.button("Clear Current Conversation"):
-            get_current_conversation()["messages"] = []
+        # Clear Chat
+        if st.button("Clear Chat"):
+            chat_data["messages"] = []
             st.rerun()
-
-    # Main chat area
-    st.title(f"💬 {st.session_state.current_conversation}")
     
-    # Display conversation selector
-    st.session_state.current_conversation = st.selectbox(
-        "Select Conversation",
-        options=list(st.session_state.conversations.keys()),
-        index=list(st.session_state.conversations.keys()).index(
-            st.session_state.current_conversation
-        )
-    )
-    
-    # Display messages
-    for message in get_current_conversation()["messages"]:
-        render_message(message)
-    
-    # Chat input
-    if prompt := st.chat_input("Type your message here..."):
-        # Add user message
-        user_message = {
-            "role": "user",
-            "content": prompt,
-            "timestamp": datetime.now().strftime("%I:%M %p")
-        }
-        get_current_conversation()["messages"].append(user_message)
+    # Chat Column
+    with col_chat:
+        st.title(f"💬 {st.session_state.current_chat}")
         
-        # Get Claude's response
-        content, thinking = get_claude_response(
-            get_current_conversation()["messages"],
-            get_current_conversation()["system_prompt"],
-            st.session_state.temperature,
-            st.session_state.max_tokens
-        )
+        # Display Messages
+        for msg in chat_data["messages"]:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+                st.caption(f"Sent at {msg.get('timestamp', '')}")
+                
+                if (msg["role"] == "assistant" and 
+                    st.session_state.show_thinking and 
+                    msg.get("thinking")):
+                    with st.expander("💭 Thinking Process"):
+                        st.markdown(
+                            f"<div class='thinking-expander'>"
+                            f"<div class='thinking-text'>{msg['thinking']}</div>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
         
-        # Add assistant message
-        assistant_message = {
-            "role": "assistant",
-            "content": content,
-            "thinking": thinking,
-            "timestamp": datetime.now().strftime("%I:%M %p")
-        }
-        get_current_conversation()["messages"].append(assistant_message)
-        
-        # Rerun to update display
-        st.rerun()
+        # Chat Input
+        if prompt := st.chat_input("Type your message here..."):
+            if not st.session_state.processing_message:
+                st.session_state.processing_message = True
+                
+                try:
+                    # Add user message
+                    chat_data["messages"].append({
+                        "role": "user",
+                        "content": prompt,
+                        "timestamp": datetime.now().strftime("%I:%M %p")
+                    })
+                    
+                    # Get Claude's response
+                    response, thinking = get_claude_response(
+                        chat_data,
+                        temperature,
+                        max_tokens
+                    )
+                    
+                    # Add assistant message
+                    chat_data["messages"].append({
+                        "role": "assistant",
+                        "content": response,
+                        "thinking": thinking,
+                        "timestamp": datetime.now().strftime("%I:%M %p")
+                    })
+                    
+                    st.session_state.error_count = 0
+                    
+                except Exception as e:
+                    st.session_state.error_count += 1
+                    if st.session_state.error_count >= 3:
+                        st.error("Multiple errors occurred. Please check your settings and try again later.")
+                    
+                finally:
+                    st.session_state.processing_message = False
+                    st.rerun()
 
 if __name__ == "__main__":
     main()
