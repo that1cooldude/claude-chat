@@ -2,8 +2,8 @@ import streamlit as st
 import boto3
 import json
 import re
-from datetime import datetime
-import urllib.parse
+import time
+from datetime import datetime, timedelta
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -19,7 +19,7 @@ MODEL_ARN = (
 
 st.set_page_config(
     page_title="Claude Chat",
-    page_icon="💭",
+    page_icon="🤖",
     layout="wide"
 )
 
@@ -28,7 +28,12 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 st.markdown("""
 <style>
-.chat-container { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+.chat-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-top: 1rem;
+}
 .user-bubble {
     background-color: #2e3136;
     color: #fff;
@@ -68,7 +73,6 @@ st.markdown("""
     white-space: pre-wrap;
     word-break: break-word;
 }
-.stButton > button { width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,7 +84,7 @@ def init_session():
         st.session_state.chats = {
             "Default": {
                 "messages": [],
-                "system_prompt": "You are Claude, a helpful AI assistant.",
+                "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
                 "force_thinking": False
             }
         }
@@ -90,6 +94,8 @@ def init_session():
         st.session_state.show_thinking = False
     if "user_input_text" not in st.session_state:
         st.session_state.user_input_text = ""
+    if "processing_message" not in st.session_state:
+        st.session_state.processing_message = False
 
 init_session()
 
@@ -126,7 +132,7 @@ def get_s3_client():
         return None
 
 # -----------------------------------------------------------------------------
-# S3 OPERATIONS
+# S3 Operations
 # -----------------------------------------------------------------------------
 def save_chat_to_s3(chat_name, chat_data):
     s3 = get_s3_client()
@@ -141,7 +147,7 @@ def save_chat_to_s3(chat_name, chat_data):
             ContentType="application/json"
         )
         st.success(f"Saved chat '{chat_name}' to S3")
-    except Exception as e:
+    except ClientError as e:
         st.error(f"Save error: {e}")
 
 def load_chat_from_s3(chat_name):
@@ -171,7 +177,7 @@ def list_chats_s3():
             for k in [item["Key"] for item in objs["Contents"]]
             if k.endswith(".json")
         ])
-    except Exception as e:
+    except ClientError as e:
         st.error(f"List error: {e}")
         return []
 
@@ -180,24 +186,24 @@ def list_chats_s3():
 # -----------------------------------------------------------------------------
 def build_bedrock_messages(chat_data):
     bedrock_msgs = []
-
+    
     if chat_data.get("force_thinking", False):
         bedrock_msgs.append({
-            "role":"user",
-            "content":[{"type":"text","text":"Please include chain-of-thought in <thinking>...</thinking> if possible."}]
+            "role": "user",
+            "content": [{"type": "text", "text": "Please include chain-of-thought in <thinking>...</thinking> if possible."}]
         })
 
-    sys_prompt = chat_data.get("system_prompt","").strip()
+    sys_prompt = chat_data.get("system_prompt", "").strip()
     if sys_prompt:
         bedrock_msgs.append({
-            "role":"user",
-            "content":[{"type":"text","text":f"(System Prompt)\n{sys_prompt}"}]
+            "role": "user",
+            "content": [{"type": "text", "text": f"(System Prompt)\n{sys_prompt}"}]
         })
 
     for msg in chat_data["messages"]:
         bedrock_msgs.append({
             "role": msg["role"],
-            "content": [{"type":"text","text": msg["content"]}]
+            "content": [{"type": "text", "text": msg["content"]}]
         })
     return bedrock_msgs
 
@@ -241,164 +247,137 @@ def create_message(role, content, thinking=""):
         "timestamp": datetime.now().strftime("%I:%M %p")
     }
 
-def handle_message():
-    """Process user message and get Claude's response"""
+def handle_send_message(chat_data, temperature, max_tokens):
     user_msg = st.session_state.user_input_text.strip()
-    chat_data = get_current_chat_data()
-    
     if not user_msg:
         st.warning("Please enter a message.")
         return
-    
+
     # Add user message
     chat_data["messages"].append(create_message("user", user_msg))
     
-    # Clear input immediately
+    # Clear input
     st.session_state.user_input_text = ""
-    
+    st.session_state.processing_message = True
+
     # Get Claude's response
     with st.status("Getting response from Claude...", expanded=True) as status:
         client = get_bedrock_client()
         if client:
             try:
-                response, thinking = invoke_claude(
-                    client, 
-                    chat_data,
-                    st.session_state.get("temperature", 0.7),
-                    st.session_state.get("max_tokens", 1000)
-                )
-                # Add assistant message
+                response, thinking = invoke_claude(client, chat_data, temperature, max_tokens)
                 chat_data["messages"].append(
                     create_message("assistant", response, thinking)
                 )
                 status.update(label="Response received!", state="complete")
+                st.rerun()
             except Exception as e:
                 st.error(f"Error: {str(e)}")
                 status.update(label="Error occurred", state="error")
+    
+    st.session_state.processing_message = False
 
 # -----------------------------------------------------------------------------
-# LAYOUT
+# MAIN LAYOUT
 # -----------------------------------------------------------------------------
 col_chat, col_settings = st.columns([2,1], gap="large")
 
 with col_settings:
     st.title("Claude Chat")
 
-    # Model Controls
-    st.subheader("Settings")
-    st.session_state["temperature"] = st.slider("Temperature", 0.0, 1.0, 0.7)
-    st.session_state["max_tokens"] = st.slider("Max Tokens", 100, 4096, 1000)
-    
-    # System Prompt
-    st.subheader("System Prompt")
-    chat_data = get_current_chat_data()
-    chat_data["system_prompt"] = st.text_area(
-        "Instructions for Claude",
-        value=chat_data.get("system_prompt",""),
-        height=100
-    )
-
-    # Conversations
-    st.subheader("Conversations")
+    # Switch conversation
     chat_keys = list(st.session_state.chats.keys())
-    current_idx = chat_keys.index(st.session_state.current_chat)
-    chosen_chat = st.selectbox("Select Chat", chat_keys, index=current_idx)
+    chosen_chat = st.selectbox(
+        "Pick a Conversation",
+        options=chat_keys,
+        index=chat_keys.index(st.session_state.current_chat)
+        if st.session_state.current_chat in chat_keys
+        else 0
+    )
     if chosen_chat != st.session_state.current_chat:
         st.session_state.current_chat = chosen_chat
+        st.rerun()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        new_chat = st.text_input("New Chat Name")
-        if st.button("Create") and new_chat:
-            if new_chat not in st.session_state.chats:
-                st.session_state.chats[new_chat] = {
-                    "messages": [],
-                    "system_prompt": chat_data["system_prompt"],
-                    "force_thinking": False
-                }
-                st.session_state.current_chat = new_chat
-                st.experimental_rerun()
+    # Create new conversation
+    new_chat_name = st.text_input("New Chat Name")
+    if st.button("Create Conversation"):
+        if new_chat_name and new_chat_name not in st.session_state.chats:
+            st.session_state.chats[new_chat_name] = {
+                "messages": [],
+                "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
+                "force_thinking": False
+            }
+            st.session_state.current_chat = new_chat_name
+            st.rerun()
 
-    # S3 Operations
-    st.subheader("Save/Load")
-    s3col1, s3col2 = st.columns(2)
-    with s3col1:
-        if st.button("Save to S3"):
-            save_chat_to_s3(st.session_state.current_chat, chat_data)
-    with s3col2:
-        if st.button("Load from S3"):
-            loaded = load_chat_from_s3(st.session_state.current_chat)
-            if loaded:
-                st.session_state.chats[st.session_state.current_chat] = loaded
-                st.success("Loaded chat")
-                st.experimental_rerun()
+    chat_data = get_current_chat_data()
 
-    # Thinking Display
-    st.subheader("Chain of Thought")
+    # Model Controls
+    st.subheader("Model Controls")
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
+    max_tokens = st.slider("Max Tokens", 100, 4096, 1000)
+
+    # System Prompt
+    st.subheader("System Prompt")
+    chat_data["system_prompt"] = st.text_area(
+        "Claude instructions",
+        value=chat_data.get("system_prompt", "")
+    )
+
+    # Chain-of-Thought
+    st.subheader("Chain-of-Thought")
     chat_data["force_thinking"] = st.checkbox(
-        "Request thinking process",
+        "Force chain-of-thought in <thinking>...",
         value=chat_data.get("force_thinking", False)
     )
     st.session_state.show_thinking = st.checkbox(
-        "Show thinking",
+        "Show chain-of-thought",
         value=st.session_state.show_thinking
     )
 
+    # Save/Load S3
+    st.subheader("Save/Load")
+    save_col, load_col = st.columns(2)
+    with save_col:
+        if st.button("Save Chat"):
+            save_chat_to_s3(st.session_state.current_chat, chat_data)
+    with load_col:
+        if st.button("Load Chat"):
+            loaded_data = load_chat_from_s3(st.session_state.current_chat)
+            if loaded_data:
+                st.session_state.chats[st.session_state.current_chat] = loaded_data
+                st.rerun()
+
     if st.button("Clear Chat"):
-        if st.session_state.current_chat in st.session_state.chats:
-            st.session_state.chats[st.session_state.current_chat]["messages"] = []
-            st.experimental_rerun()
+        chat_data["messages"] = []
+        st.rerun()
 
 with col_chat:
-    st.header(f"Chat: {st.session_state.current_chat}")
-    
-    # Display Messages
+    st.header(f"Conversation: {st.session_state.current_chat}")
+
+    # Chat display
     st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
-    
     for msg in chat_data["messages"]:
-        # Message bubble
-        bubble_class = "assistant-bubble" if msg["role"] == "assistant" else "user-bubble"
-        st.markdown(
-            f"<div class='{bubble_class}'>{msg['content']}</div>",
-            unsafe_allow_html=True
-        )
-        
-        # Timestamp
-        st.markdown(
-            f"<div class='timestamp'>{msg.get('timestamp', '')}</div>",
-            unsafe_allow_html=True
-        )
-        
-        # Thinking process for assistant messages
-        if (msg["role"] == "assistant" and 
-            st.session_state.show_thinking and 
-            msg.get("thinking")):
+        bubble_class = "assistant-bubble" if msg["role"]=="assistant" else "user-bubble"
+        st.markdown(f"<div class='{bubble_class}'>{msg['content']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='timestamp'>{msg.get('timestamp','')}</div>", unsafe_allow_html=True)
+
+        if msg["role"]=="assistant" and st.session_state.show_thinking and msg.get("thinking"):
             with st.expander("Chain-of-Thought"):
                 st.markdown(
-                    f"<div class='thinking-expander'>"
-                    f"<span class='thinking-text'>{msg['thinking']}</span>"
-                    f"</div>",
+                    f"<div class='thinking-expander'><span class='thinking-text'>{msg['thinking']}</span></div>",
                     unsafe_allow_html=True
                 )
-    
     st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Message Input
+
+    # Message input
     st.text_area(
         "Message",
         key="user_input_text",
         height=100,
-        placeholder="Type your message here... (Ctrl+Enter to send)"
+        placeholder="Type your message here..."
     )
-    
-    # Quick Links
-    if st.session_state.user_input_text:
-        search_url = (
-            "https://www.perplexity.ai/search?q=" +
-            urllib.parse.quote(st.session_state.user_input_text)
-        )
-        st.markdown(f"[🔍 Search this topic]({search_url})")
-    
-    # Send Button
-    if st.button("Send Message", use_container_width=True):
-        handle_message()
+
+    # Send button
+    if st.button("Send Message", type="primary", use_container_width=True):
+        handle_send_message(chat_data, temperature, max_tokens)
