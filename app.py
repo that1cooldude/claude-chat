@@ -5,7 +5,6 @@ import re
 from datetime import datetime
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
-import time
 
 # -----------------------------------------------------------------------------
 # CONFIG
@@ -311,25 +310,23 @@ with col_chat:
 
     chat_display = st.empty()
 
-    for _ in range(100):  # Auto-refresh for a limited number of iterations to prevent infinite loops
-        with chat_display.container():
-            st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
-            for i, msg in enumerate(chat_data["messages"]):
-                bubble_class = "assistant-bubble" if msg["role"] == "assistant" else "user-bubble"
-                st.markdown(f"<div class='{bubble_class}'>{msg['content']}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='timestamp'>{msg.get('timestamp', '')}</div>", unsafe_allow_html=True)
+    with chat_display.container():
+        st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
+        for i, msg in enumerate(chat_data["messages"]):
+            bubble_class = "assistant-bubble" if msg["role"] == "assistant" else "user-bubble"
+            st.markdown(f"<div class='{bubble_class}'>{msg['content']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='timestamp'>{msg.get('timestamp', '')}</div>", unsafe_allow_html=True)
 
-                if msg["role"] == "assistant" and msg.get("thinking"):
-                    with st.expander("Chain-of-Thought"):
-                        st.markdown(
-                            f"<div class='thinking-expander'><span class='thinking-text'>{msg['thinking']}</span></div>",
-                            unsafe_allow_html=True
-                        )
-            st.markdown("</div>", unsafe_allow_html=True)
-        time.sleep(10)
+            if msg["role"] == "assistant" and msg.get("thinking"):
+                with st.expander("Chain-of-Thought"):
+                    st.markdown(
+                        f"<div class='thinking-expander'><span class='thinking-text'>{msg['thinking']}</span></div>",
+                        unsafe_allow_html=True
+                    )
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.subheader("Send a Message")
-    user_input = st.text_area("Type your message", value=st.session_state.user_input_text, height=75)
+    user_input = st.text_area("Type your message", value=st.session_state.user_input_text, height=75, key="user_input")
     if st.button("Send Message"):
         if user_input.strip():
             chat_data["messages"].append({
@@ -352,3 +349,11 @@ with col_chat:
             st.success("Message sent and response received!")
         else:
             st.warning("Cannot send an empty message.")
+
+    # Auto-refresh without blocking user interaction
+    if "refresh_counter" not in st.session_state:
+        st.session_state.refresh_counter = 0
+
+    st.session_state.refresh_counter += 1
+    if st.session_state.refresh_counter % 100 == 0:
+        st.experimental_rerun()
