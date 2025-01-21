@@ -1,18 +1,14 @@
 import streamlit as st
 import boto3
 import json
-import re
 from datetime import datetime
+import re
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 import threading
 from time import sleep
 
-# ... (keep existing imports)
-
-# -----------------------------------------------------------------------------
 # CONFIG
-# -----------------------------------------------------------------------------
 AWS_REGION = st.secrets.get("AWS_DEFAULT_REGION", "us-east-2")
 S3_BUCKET_NAME = st.secrets.get("S3_BUCKET_NAME", "my-llm-chats-bucket")
 MODEL_ARN = (
@@ -26,22 +22,55 @@ st.set_page_config(
     layout="wide"
 )
 
-# ... (keep existing session state initialization)
+# Initialize AWS Bedrock client
+def init_bedrock_client():
+    try:
+        return boto3.client(
+            "bedrock",
+            region_name=AWS_REGION,
+            aws_access_key_id=st.secrets.get("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=st.secrets.get("AWS_SECRET_ACCESS_KEY")
+        )
+    except Exception as e:
+        st.error(f"Failed to initialize AWS Bedrock client: {e}")
+        st.stop()
 
-# -----------------------------------------------------------------------------
+bedrock_client = init_bedrock_client()
+
+# Session state initialization
+def init_session():
+    if "chats" not in st.session_state:
+        st.session_state.chats = {
+            "Default": {
+                "messages": [],
+                "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
+                "force_thinking": False
+            }
+        }
+    if "current_chat" not in st.session_state:
+        st.session_state.current_chat = "Default"
+    if "show_thinking" not in st.session_state:
+        st.session_state.show_thinking = False
+    if "user_input_text" not in st.session_state:
+        st.session_state.user_input_text = ""
+    if "new_messages_since_last_update" not in st.session_state:
+        st.session_state.new_messages_since_last_update = False
+    if "typing" not in st.session_state:
+        st.session_state.typing = False
+
 # Auto-refresh with optimized rerun
-# -----------------------------------------------------------------------------
 def auto_refresh():
     while True:
         sleep(1)  # Refresh every second
-        st.experimental_rerun()
+        try:
+            st.experimental_rerun()
+        except Exception as e:
+            print(f"Error in auto-refresh: {e}")
 
 # Start auto-refresh in a background thread
 threading.Thread(target=auto_refresh, daemon=True).start()
 
-# -----------------------------------------------------------------------------
 # Typing indicator
-# -----------------------------------------------------------------------------
 def show_typing_indicator():
     st.markdown(
         """
@@ -57,9 +86,7 @@ def show_typing_indicator():
         unsafe_allow_html=True
     )
 
-# -----------------------------------------------------------------------------
 # Chat UI Improvements
-# -----------------------------------------------------------------------------
 def build_message_ui(msg, show_thinking):
     if msg["role"] == "user":
         align = "flex-end"
@@ -86,10 +113,7 @@ def build_message_ui(msg, show_thinking):
             ">
                 {msg['content']}
             </div>
-            <div style="
-                font-size: 0.75rem;
-                color: rgba(255,255,255,0.5);
-            ">
+            <div style="font-size: 0.75rem; color: rgba(255,255,255,0.5);">
                 {msg.get('timestamp', '')}
             </div>
         </div>
@@ -121,28 +145,142 @@ def build_message_ui(msg, show_thinking):
                 unsafe_allow_html=True
             )
 
-# -----------------------------------------------------------------------------
-# Main Layout
-# -----------------------------------------------------------------------------
-chat_col, settings_col = st.columns([2,1], gap="large")
+# Function to converse with Claude
+def converse_with_claude(prompt):
+    try:
+        response = bedrock_client.invoke_model(
+            modelId="us.anthropic.claude-3-sonnet-20241022-v2",
+            body=json.dumps({
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": get_current_chat_data()["system_prompt"]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Ok, I'm ready to help."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "temperature": 0.3,
+                "top_p": 0.9
+            }),
+            accept="application/json",
+            contentType="application/json"
+        )
 
-# Chat Column
-with chat_col:
-    st.header("Claude Chat")
-    
-    # Create a container for the chat display
-    chat_container = st.container()
-    
-    with chat_container:
-        # Display messages with new UI
-        for msg in get_current_chat_data()["messages"]:
-            build_message_ui(msg, st.session_state.show_thinking)
+        response_body = json.loads(response['body'].read())
+        return {
+            "role": "assistant",
+            "content": response_body["messages"][-1]["content"],
+            "thinking": response_body.get("thoughts", "")
+        }
+
+    except ClientError as e:
+        st.error(f"AWS Bedrock API error: {e}")
+        return {
+            "role": "assistant",
+            "content": "Sorry, I encountered an error while processing your request. Please try again.",
+            "thinking": ""
+        }
+
+# Function to get current chat data
+def get_current_chat_data():
+    current_chat = st.session_state.current_chat
+    if current_chat not in st.session_state.chats:
+        st.session_state.current_chat = "Default"
+        current_chat = "Default"
+    return st.session_state.chats.get(
+        current_chat, {"messages": []}
+    )
+
+# Main Layout
+def main():
+    init_session()
+    chat_col, settings_col = st.columns([2,1], gap="large")
+
+    # Chat Column
+    with chat_col:
+        st.header("Claude Chat")
         
-        # Add typing indicator
-        if st.session_state.get("typing", False):
-            show_typing_indicator()
-    
-    # Create a form for message input and send button
-    with st.form("message_form"):
-        st.subheader("Type Your Message")
-        st.session_state.user_input
+        # Create a container for the chat display
+        chat_container = st.container()
+        
+        with chat_container:
+            # Display messages with new UI
+            current_chat_data = get_current_chat_data()
+            if isinstance(current_chat_data.get('messages'), list):
+                try:
+                    for msg in current_chat_data["messages"]:
+                        build_message_ui(msg, st.session_state.show_thinking)
+                except KeyError:
+                    st.error("Error accessing message data. Please reload the app.")
+                except Exception as e:
+                    st.error(f"Error in message display: {e}")
+            
+            # Add typing indicator
+            if st.session_state.get("typing", False):
+                show_typing_indicator()
+        
+        # Create a form for message input and send button
+        with st.form("message_form"):
+            st.subheader("Type Your Message")
+            user_input = st.text_area(
+                "Message",
+                value=st.session_state.user_input_text,
+                height=100,
+                key="user_input_text"
+            )
+
+            # Column layout for controls
+            col1, col2, col3 = st.columns([1,1,2])
+            
+            with col1:
+                st.checkbox(
+                    "Show Chain-of-Thought",
+                    key="show_thinking",
+                    value=st.session_state.show_thinking
+                )
+            
+            with col2:
+                st.checkbox(
+                    "Force Chain-of-Thought",
+                    key="force_thinking",
+                    value=(
+                        get_current_chat_data()["force_thinking"]
+                        if "force_thinking" in get_current_chat_data()
+                        else False
+                    )
+                )
+            
+            with col3:
+                st.empty()  # Placeholder for alignment
+
+            # Send button
+            if st.form_submit_button("Send"):
+                st.session_state.user_input_text = ""
+                prompt = user_input.strip()
+                if prompt:
+                    try:
+                        # Add user message to chat data
+                        current_chat_data = get_current_chat_data()
+                        if isinstance(current_chat_data, dict):
+                            current_chat_data["messages"].append({
+                                "role": "user",
+                                "content": prompt,
+                                "timestamp": datetime.now().strftime("%H:%M:%S")
+                            })
+                            st.session_state.new_messages_since_last_update = True
+
+                            # Simulating Claude's response
+                            assistant_response = converse_with_claude(prompt)
+                            if assistant_response:
+                                current_chat_data["messages"].append(assistant_response)
+                    except Exception as e:
+                        st.error(f"Error sending message: {e}")
+
+if __name__ == "__main__":
+    main()
