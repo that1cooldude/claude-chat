@@ -64,18 +64,19 @@ body {
     text-align: right;
 }
 
-/* Thinking expander styling */
+/* Enhanced thinking expander styling */
 .thinking-expander {
     background-color: rgba(0, 0, 0, 0.1);
     border-left: 4px solid #ffd700;
     border-radius: 8px;
     padding: 1rem;
     margin: 0.5rem 0;
-    transition: transform 0.2s ease;
+    transition: all 0.3s ease;
 }
 
 .thinking-expander:hover {
     transform: translateX(4px);
+    background-color: rgba(0, 0, 0, 0.15);
 }
 
 /* Input and button styling */
@@ -112,6 +113,15 @@ div[data-testid="stExpander"] {
     font-size: 1rem;
     line-height: 1.4;
 }
+
+/* Thinking process visibility */
+.thinking-text {
+    font-family: 'Courier New', monospace;
+    line-height: 1.5;
+    padding: 10px;
+    background-color: rgba(255, 215, 0, 0.1);
+    border-radius: 5px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -122,13 +132,13 @@ def init_session():
             "Default": {
                 "messages": [],
                 "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
-                "force_thinking": False
+                "force_thinking": True  # Changed to True
             }
         }
     if "current_chat" not in st.session_state:
         st.session_state.current_chat = "Default"
     if "show_thinking" not in st.session_state:
-        st.session_state.show_thinking = True
+        st.session_state.show_thinking = True  # Changed to True
     if "processing_message" not in st.session_state:
         st.session_state.processing_message = False
     if "error_count" not in st.session_state:
@@ -220,17 +230,18 @@ def list_s3_chats() -> list:
 def build_messages(chat_data: dict) -> list:
     messages = []
     
-    if chat_data.get("force_thinking", False):
+    # Modified to ensure thinking is included when force_thinking is True
+    if chat_data.get("force_thinking", True):
         messages.append({
-            "role": "user",
-            "content": [{"type": "text", "text": "Please include chain-of-thought in <thinking>...</thinking> tags."}]
+            "role": "system",
+            "content": [{"type": "text", "text": "Always include your detailed reasoning process within <thinking>...</thinking> tags before your final response."}]
         })
     
     sys_prompt = chat_data.get("system_prompt","").strip()
     if sys_prompt:
         messages.append({
-            "role": "user",
-            "content": [{"type": "text", "text": f"(System Prompt)\n{sys_prompt}"}]
+            "role": "system",
+            "content": [{"type": "text", "text": sys_prompt}]
         })
     
     for msg in chat_data["messages"]:
@@ -322,7 +333,7 @@ def main():
                 st.session_state.chats[new_chat_name] = {
                     "messages": [],
                     "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
-                    "force_thinking": True
+                    "force_thinking": True  # Changed to True
                 }
                 st.session_state.current_chat = new_chat_name
                 st.rerun()
@@ -389,7 +400,7 @@ def main():
                     st.warning("No saved chat found.", icon="⚠️")
 
         # select and load from saved chats
-        saved_chats = list_s_s3_chats()
+        saved_chats = list_s3_chats()
         if saved_chats:
             selected = st.selectbox(
                 "Select Saved Chat",
@@ -427,9 +438,9 @@ def main():
                    msg.get("thinking"):
                     with st.expander("🧠 Thinking Process", expanded=True):
                         st.markdown(
-                            f"<div class='thinking-expander'>"
-                            f"<div class='thinking-text'>{msg['thinking']}</div>"
-                            f"</div>",
+                            f"""<div class="thinking-expander">
+                                <div class="thinking-text">{msg['thinking']}</div>
+                               </div>""",
                             unsafe_allow_html=True
                         )
 
