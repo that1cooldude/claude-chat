@@ -5,6 +5,8 @@ import re
 from datetime import datetime
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
+import threading
+from time import sleep
 
 # -----------------------------------------------------------------------------
 # CONFIG
@@ -17,78 +19,62 @@ MODEL_ARN = (
 )
 
 st.set_page_config(
-    page_title="Claude Chat (No Rerun)",
+    page_title="Claude Chat",
     page_icon="🤖",
     layout="wide"
 )
 
 # -----------------------------------------------------------------------------
-# DISCLAIMER
+# Constants for styling
 # -----------------------------------------------------------------------------
-# 1) We do NOT use st.rerun() or st.experimental_rerun().
-#    This means the chat won't auto-refresh after sending a message.
-#    The user must either manually reload the page or press an "Update Conversation" button
-#    to see the new assistant reply appended to the UI.
-#
-# 2) The chain-of-thought might not appear if Claude doesn't produce <thinking> tags.
-#
-# 3) It's a simpler, less dynamic experience, but avoids older-Streamlit attribute errors.
+COLORS = {
+    "dark_primary": "#1a1a1a",
+    "dark_secondary": "#2d2d2d",
+    "dark_accent": "#3d3d3d",
+    "text_primary": "#ffffff",
+    "text_secondary": "#e0e0e0",
+    "user_bubble": "#2e3136",
+    "assistant_bubble": "#454a50",
+    "thinking_border": "#ffd700",
+    "timestamp": "#666666"
+}
+
+STYLES = {
+    "chat_container": {
+        "background": COLORS["dark_secondary"],
+        "border_radius": "10px",
+        "padding": "20px",
+        "gap": "1rem"
+    },
+    "bubble": {
+        "padding": "12px 16px",
+        "border_radius": "10px",
+        "max_width": "80%",
+        "word_wrap": "break-word"
+    },
+    "timestamp": {
+        "font_size": "0.75rem",
+        "color": COLORS["timestamp"],
+        "margin_top": "2px",
+        "text_align": "right"
+    },
+    "thinking": {
+        "background": COLORS["dark_accent"],
+        "border_left": f"3px solid {COLORS['thinking_border']}",
+        "border_radius": "5px",
+        "padding": "8px",
+        "margin_top": "4px"
+    },
+    "typing_indicator": {
+        "color": COLORS["text_secondary"],
+        "font_style": "italic",
+        "margin_top": "10px",
+        "text_align": "center"
+    }
+}
 
 # -----------------------------------------------------------------------------
-# BASIC CSS
-# -----------------------------------------------------------------------------
-st.markdown("""
-<style>
-.chat-container {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    margin-top: 1rem;
-}
-.user-bubble {
-    background-color: #2e3136; /* dark gray for user */
-    color: #fff;
-    padding: 12px 16px;
-    border-radius: 10px;
-    max-width: 80%;
-    align-self: flex-end;
-    word-wrap: break-word;
-    margin-bottom: 4px;
-}
-.assistant-bubble {
-    background-color: #454a50; /* lighter gray for assistant */
-    color: #fff;
-    padding: 12px 16px;
-    border-radius: 10px;
-    max-width: 80%;
-    align-self: flex-start;
-    word-wrap: break-word;
-    margin-bottom: 4px;
-}
-.timestamp {
-    font-size: 0.75rem;
-    color: rgba(255,255,255,0.5);
-    margin-top: 2px;
-    text-align: right;
-}
-.thinking-expander {
-    background-color: #333;
-    border-left: 3px solid #ffd700;
-    border-radius: 5px;
-    padding: 8px;
-    margin-top: 4px;
-}
-.thinking-text {
-    color: #ffd700;
-    font-style: italic;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
-# SESSION STATE
+# Session State Initialization
 # -----------------------------------------------------------------------------
 def init_session():
     if "chats" not in st.session_state:
@@ -105,14 +91,15 @@ def init_session():
     if "show_thinking" not in st.session_state:
         st.session_state.show_thinking = False
 
-    # We store the typed user message in state
     if "user_input_text" not in st.session_state:
         st.session_state.user_input_text = ""
 
-    # We'll track if a new response has been appended to messages
-    # Because we're not auto-rerunning
     if "new_messages_since_last_update" not in st.session_state:
         st.session_state.new_messages_since_last_update = False
+
+    # Typing indicator state
+    if "typing" not in st.session_state:
+        st.session_state.typing = False
 
 init_session()
 
@@ -218,11 +205,6 @@ def total_token_usage(chat_data: dict):
 # BUILD BEDROCK MSGS
 # -----------------------------------------------------------------------------
 def build_bedrock_messages(chat_data):
-    """
-    1) If 'force_thinking' is True, we prepend a user message: "Please include chain-of-thought..."
-    2) We then add the system_prompt as a user message.
-    3) We add the conversation messages with roles 'user' or 'assistant'.
-    """
     bedrock_msgs = []
 
     if chat_data.get("force_thinking", False):
@@ -292,12 +274,27 @@ def create_message(role, content, thinking=""):
     }
 
 # -----------------------------------------------------------------------------
+# Auto-refresh functionality
+# -----------------------------------------------------------------------------
+def auto_refresh():
+    while True:
+        sleep(1)  # Refresh every second
+        st.experimental_rerun()
+
+# Start auto-refresh in a background thread
+threading.Thread(target=auto_refresh, daemon=True).start()
+
+# -----------------------------------------------------------------------------
 # MAIN LAYOUT
 # -----------------------------------------------------------------------------
 col_chat, col_settings = st.columns([2,1], gap="large")
 
 with col_settings:
-    st.title("Claude Chat (No Rerun)")
+    st.title("Claude Chat")
+    
+    # Chat theme toggle
+    if st.button("Toggle Dark Mode"):
+        st.experimental_rerun()
 
     # Switch conversation
     chat_keys = list(st.session_state.chats.keys())
@@ -382,44 +379,116 @@ with col_settings:
     if st.button("Clear Current Chat"):
         chat_data["messages"] = []
 
-    # "Update Conversation" - to see newly appended messages
-    if st.button("Update Conversation"):
-        # This simply re-renders the UI with any new messages
-        st.success("Conversation updated! Scroll down on the left to see new messages if any.")
-
-
 with col_chat:
     st.header(f"Conversation: {st.session_state.current_chat}")
 
-    st.write("**Instructions**: Type your message below, click 'Send Message', then press 'Update Conversation' to see Claude's reply appended in the chat. (No auto-refresh)")
-
     # Chat display
-    st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
-    for i, msg in enumerate(chat_data["messages"]):
-        bubble_class = "assistant-bubble" if msg["role"]=="assistant" else "user-bubble"
-        st.markdown(f"<div class='{bubble_class}'>{msg['content']}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='timestamp'>{msg.get('timestamp','')}</div>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="
+        background-color: {COLORS['dark_secondary']};
+        border-radius: 10px;
+        padding: 20px;
+        gap: 1rem;
+        display: flex;
+        flex-direction: column;
+        height: 60vh;
+        overflow-y: auto;
+    ">
+    """, unsafe_allow_html=True)
 
-        # Show chain-of-thought if assistant + user toggled + we have thinking
+    for msg in chat_data["messages"]:
+        bubble_class = "assistant-bubble" if msg["role"]=="assistant" else "user-bubble"
+        st.markdown(f"""
+            <div class='{bubble_class}' style="
+                background-color: {COLORS['assistant_bubble'] if msg['role']=='assistant' else COLORS['user_bubble']};
+                color: {COLORS['text_primary']};
+                padding: {STYLES['bubble']['padding']};
+                border-radius: {STYLES['bubble']['border_radius']};
+                max-width: {STYLES['bubble']['max_width']};
+                word-wrap: {STYLES['bubble']['word_wrap']};
+                margin-bottom: 4px;
+            ">
+                {msg['content']}
+            </div>
+            """, unsafe_allow_html=True)
+        st.markdown(f"""
+            <div class='timestamp' style="
+                font-size: {STYLES['timestamp']['font_size']};
+                color: {COLORS['timestamp']};
+                margin-top: {STYLES['timestamp']['margin_top']};
+                text-align: right;
+            ">
+                {msg.get('timestamp', '')}
+            </div>
+            """, unsafe_allow_html=True)
+
         if msg["role"]=="assistant" and st.session_state.show_thinking and msg.get("thinking"):
             with st.expander("Chain-of-Thought"):
-                st.markdown(
-                    f"<div class='thinking-expander'><span class='thinking-text'>{msg['thinking']}</span></div>",
-                    unsafe_allow_html=True
-                )
+                st.markdown(f"""
+                    <div style="
+                        background-color: {COLORS['dark_accent']};
+                        border-left: 3px solid {COLORS['thinking_border']};
+                        border-radius: 5px;
+                        padding: 8px;
+                        margin-top: 4px;
+                    ">
+                        <span style="
+                            color: {COLORS['thinking_border']};
+                            font-style: italic;
+                            white-space: pre-wrap;
+                            word-break: break-word;
+                        ">
+                            {msg['thinking']}
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
     st.markdown("</div>", unsafe_allow_html=True)
+
+    # Typing indicator
+    if st.session_state.typing:
+        st.markdown(f"""
+            <div style="
+                color: {COLORS['text_secondary']};
+                font-style: italic;
+                margin-top: 10px;
+                text-align: center;
+            ">
+                Now typing...
+            </div>
+            """, unsafe_allow_html=True)
 
     # Text area for user input
     st.subheader("Type Your Message")
     st.session_state.user_input_text = st.text_area(
         "Message",
-        value=st.session_state.user_input_text
+        value=st.session_state.user_input_text,
+        height=100,
+        style=f"""
+            background-color: {COLORS['dark_primary']};
+            color: {COLORS['text_primary']};
+            border: 1px solid {COLORS['dark_secondary']};
+            border-radius: 5px;
+            padding: 10px;
+        """
     )
 
-    if st.button("Send Message"):
+    if st.button("Send Message", 
+                style=f"""
+                    background-color: {COLORS['dark_primary']};
+                    color: {COLORS['text_primary']};
+                    border: 1px solid {COLORS['dark_secondary']};
+                    padding: 10px 20px;
+                    border-radius: 5px;
+                    margin-top: 10px;
+                """):
         user_msg_str = st.session_state.user_input_text.strip()
         if user_msg_str:
-            # 1) Add user message
+            # Show typing indicator
+            st.session_state.typing = True
+            st.experimental_rerun()
+
+            # Add user message
             chat_data["messages"].append({
                 "role": "user",
                 "content": user_msg_str,
@@ -427,7 +496,7 @@ with col_chat:
                 "timestamp": datetime.now().strftime("%I:%M %p")
             })
 
-            # 2) Call Claude
+            # Call Claude
             client = get_bedrock_client()
             if client:
                 ans_text, ans_think = invoke_claude(client, chat_data, temperature, max_tokens)
@@ -438,7 +507,9 @@ with col_chat:
                     "timestamp": datetime.now().strftime("%I:%M %p")
                 })
 
-            st.session_state.user_input_text = ""  # Clear the input
-            st.info("Message sent. Click 'Update Conversation' in the right column to see the new reply.")
+            # Hide typing indicator
+            st.session_state.typing = False
+            st.session_state.user_input_text = ""
+            st.experimental_rerun()
         else:
             st.warning("No message entered. Please type something first.")
