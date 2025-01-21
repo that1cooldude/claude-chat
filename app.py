@@ -1,4 +1,3 @@
-# imports
 import streamlit as st
 import boto3
 import json
@@ -7,10 +6,17 @@ from datetime import datetime
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+# Must be the first Streamlit command
+st.set_page_config(
+    page_title="Enhanced Claude Chat",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # CSS styling
 st.markdown("""
 <style>
-/* Primary theming */
 :root {
     --primary-color: #2d3748;
     --secondary-color: #3aa1da;
@@ -19,15 +25,11 @@ st.markdown("""
     --gradient: linear-gradient(135deg, #2d3748 0%, #3aa1da 100%);
     --shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
-
-/* General styling */
 body {
     background-color: var(--background-color);
     color: var(--text-color);
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
-
-/* Chat container styling */
 .chat-container {
     background: var(--primary-color);
     padding: 2rem;
@@ -35,8 +37,6 @@ body {
     margin: 1rem 0;
     box-shadow: var(--shadow);
 }
-
-/* Message styling */
 .user-bubble {
     background-color: #3aa1da;
     border-left: 4px solid #ffd700;
@@ -46,7 +46,6 @@ body {
     margin: 0.5rem 0;
     word-wrap: break-word;
 }
-
 .assistant-bubble {
     background-color: #2d3748;
     border-right: 4px solid #ffd700;
@@ -56,15 +55,12 @@ body {
     margin: 0.5rem 0;
     word-wrap: break-word;
 }
-
 .timestamp {
     font-size: 0.8rem;
     color: rgba(255, 255, 255, 0.6);
     margin-top: 0.5rem;
     text-align: right;
 }
-
-/* Enhanced thinking expander styling */
 .thinking-expander {
     background-color: rgba(0, 0, 0, 0.1);
     border-left: 4px solid #ffd700;
@@ -73,18 +69,13 @@ body {
     margin: 0.5rem 0;
     transition: all 0.3s ease;
 }
-
 .thinking-expander:hover {
     transform: translateX(4px);
-    background-color: rgba(0, 0, 0, 0.15);
 }
-
-/* Input and button styling */
 .stChatMessage {
     margin: 0;
     padding: 0;
 }
-
 .stButton>button {
     background-image: var(--gradient);
     border: none;
@@ -95,26 +86,19 @@ body {
     cursor: pointer;
     transition: transform 0.15s ease;
 }
-
 .stButton>button:hover {
     transform: translateY(-1px);
 }
-
-/* Expander styling */
 div[data-testid="stExpander"] {
     border: none;
     box-shadow: none;
     background-color: transparent;
 }
-
-/* Improved text display */
 .chat-message {
     white-space: pre-wrap;
     font-size: 1rem;
     line-height: 1.4;
 }
-
-/* Thinking process visibility */
 .thinking-text {
     font-family: 'Courier New', monospace;
     line-height: 1.5;
@@ -125,20 +109,19 @@ div[data-testid="stExpander"] {
 </style>
 """, unsafe_allow_html=True)
 
-# session state initialization
 def init_session():
     if "chats" not in st.session_state:
         st.session_state.chats = {
             "Default": {
                 "messages": [],
                 "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
-                "force_thinking": True  # Changed to True
+                "force_thinking": True
             }
         }
     if "current_chat" not in st.session_state:
         st.session_state.current_chat = "Default"
     if "show_thinking" not in st.session_state:
-        st.session_state.show_thinking = True  # Changed to True
+        st.session_state.show_thinking = True
     if "processing_message" not in st.session_state:
         st.session_state.processing_message = False
     if "error_count" not in st.session_state:
@@ -149,7 +132,6 @@ init_session()
 def get_current_chat_data():
     return st.session_state.chats[st.session_state.current_chat]
 
-# AWS clients
 @st.cache_resource
 def get_bedrock_client():
     try:
@@ -176,7 +158,6 @@ def get_s3_client():
         st.error(f"Error creating S3 client: {e}")
         return None
 
-# S3 operations
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def save_chat_to_s3(chat_name: str, chat_data: dict) -> bool:
     s3 = get_s3_client()
@@ -226,11 +207,9 @@ def list_s3_chats() -> list:
         st.error(f"List error: {e}")
         return []
 
-# Claude operations
 def build_messages(chat_data: dict) -> list:
     messages = []
     
-    # Modified to ensure thinking is included when force_thinking is True
     if chat_data.get("force_thinking", True):
         messages.append({
             "role": "system",
@@ -261,8 +240,7 @@ def get_claude_response(chat_data: dict, temperature: float, max_tokens: int) ->
     messages = build_messages(chat_data)
     try:
         response = client.invoke_model(
-            modelId=st.secrets.get("MODEL_ARN", 
-                "arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            modelId=st.secrets.get("MODEL_ARN", "arn:aws:bedrock:us-east-2:127214158930:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
             body=json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": max_tokens,
@@ -276,13 +254,11 @@ def get_claude_response(chat_data: dict, temperature: float, max_tokens: int) ->
         if "content" not in result:
             raise Exception("Invalid response format from Claude")
             
-        # Combine all text segments
         full_response = " ".join(
             seg["text"] for seg in result["content"]
             if seg.get("type") == "text"
         ).strip()
         
-        # Extract thinking process
         thinking = ""
         match = re.search(r"<thinking>(.*?)</thinking>", full_response, re.DOTALL)
         if match:
@@ -295,24 +271,12 @@ def get_claude_response(chat_data: dict, temperature: float, max_tokens: int) ->
         st.error(f"Error getting Claude response: {str(e)}")
         raise
 
-# main application
 def main():
-    # page config
-    st.set_page_config(
-        page_title="Enhanced Claude Chat",
-        page_icon="🤖",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-
-    # columns
     col_chat, col_settings = st.columns([2, 1], gap="large")
 
-    # settings column
     with col_settings:
         st.title("Chat Settings", anchor=False)
         
-        # conversation management
         chat_keys = list(st.session_state.chats.keys())
         chosen_chat = st.selectbox(
             "Active Conversation",
@@ -323,7 +287,6 @@ def main():
         if chosen_chat != st.session_state.current_chat:
             st.session_state.current_chat = chosen_chat
 
-        # create new chat
         new_chat_name = st.text_input(
             "New Chat Name",
             help="Enter a name for your new conversation."
@@ -333,14 +296,13 @@ def main():
                 st.session_state.chats[new_chat_name] = {
                     "messages": [],
                     "system_prompt": "You are Claude. Provide chain-of-thought if forced.",
-                    "force_thinking": True  # Changed to True
+                    "force_thinking": True
                 }
                 st.session_state.current_chat = new_chat_name
                 st.rerun()
 
         chat_data = get_current_chat_data()
 
-        # model settings
         st.subheader("Model Settings", anchor=False)
         temperature = st.slider(
             "Temperature (creativity)",
@@ -357,7 +319,6 @@ def main():
             help="Controls the maximum length of Claude's response."
         )
 
-        # system prompt
         st.subheader("System Instructions", anchor=False)
         system_prompt = st.text_area(
             "Claude's Instructions",
@@ -367,7 +328,6 @@ def main():
         )
         chat_data["system_prompt"] = system_prompt.strip()
 
-        # thinking settings
         st.subheader("Chain of Thought", anchor=False)
         chat_data["force_thinking"] = st.checkbox(
             "Request Thinking Process",
@@ -380,7 +340,6 @@ def main():
             help="Toggle to display Claude's internal thinking steps."
         )
 
-        # S3 operations
         st.subheader("Save/Load Conversations", anchor=False)
         col1, col2 = st.columns(2)
 
@@ -399,7 +358,6 @@ def main():
                 else:
                     st.warning("No saved chat found.", icon="⚠️")
 
-        # select and load from saved chats
         saved_chats = list_s3_chats()
         if saved_chats:
             selected = st.selectbox(
@@ -417,25 +375,20 @@ def main():
                 else:
                     st.warning("Failed to load the selected chat.", icon="⚠️")
 
-        # clear chat
         if st.button("🗑️ Clear Current Chat", help="Clear all messages in the current conversation."):
             chat_data["messages"] = []
             st.success("Chat cleared!", icon="✅")
             st.rerun()
 
-    # chat column
     with col_chat:
         st.title(f"💬 {st.session_state.current_chat}", anchor=False)
 
-        # display messages
         for msg in chat_data["messages"]:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
                 st.caption(f"🕒 Sent at {msg.get('timestamp', '')}")
 
-                if msg["role"] == "assistant" and \
-                   st.session_state.show_thinking and \
-                   msg.get("thinking"):
+                if msg["role"] == "assistant" and st.session_state.show_thinking and msg.get("thinking"):
                     with st.expander("🧠 Thinking Process", expanded=True):
                         st.markdown(
                             f"""<div class="thinking-expander">
@@ -444,22 +397,18 @@ def main():
                             unsafe_allow_html=True
                         )
 
-        # chat input
         if prompt := st.chat_input("Type your message here..."):
             if not st.session_state.processing_message:
                 st.session_state.processing_message = True
                 try:
-                    # add user message
                     chat_data["messages"].append({
                         "role": "user",
                         "content": prompt,
                         "timestamp": datetime.now().strftime("%I:%M %p")
                     })
                     
-                    # get response
                     response, thinking = get_claude_response(chat_data, temperature, max_tokens)
 
-                    # add assistant message
                     chat_data["messages"].append({
                         "role": "assistant",
                         "content": response,
