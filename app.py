@@ -74,12 +74,7 @@ threading.Thread(target=auto_refresh, daemon=True).start()
 def show_typing_indicator():
     st.markdown(
         """
-        <div style="
-            color: #666;
-            font-style: italic;
-            text-align: center;
-            padding: 1rem 0;
-        ">
+        <div style="color: #666; font-style: italic; text-align: center; padding: 1rem 0;">
             Claude is typing...
         </div>
         """,
@@ -97,20 +92,8 @@ def build_message_ui(msg, show_thinking):
     
     st.markdown(
         f"""
-        <div style="
-            display: flex;
-            {align};
-            gap: 1rem;
-            margin-top: 1rem;
-        ">
-            <div style="
-                background-color: {bubble_color};
-                color: white;
-                padding: 12px 16px;
-                border-radius: 10px;
-                max-width: 80%;
-                word-wrap: break-word;
-            ">
+        <div style="display: flex; {align}; gap: 1rem; margin-top: 1rem;">
+            <div style="background-color: {bubble_color}; color: white; padding: 12px 16px; border-radius: 10px; max-width: 80%; word-wrap: break-word;">
                 {msg['content']}
             </div>
             <div style="font-size: 0.75rem; color: rgba(255,255,255,0.5);">
@@ -125,19 +108,8 @@ def build_message_ui(msg, show_thinking):
         with st.expander("Chain-of-Thought"):
             st.markdown(
                 f"""
-                <div style="
-                    background-color: #333;
-                    border-left: 3px solid #ffd700;
-                    border-radius: 5px;
-                    padding: 8px;
-                    margin-top: 4px;
-                ">
-                    <span style="
-                        color: #ffd700;
-                        font-style: italic;
-                        white-space: pre-wrap;
-                        word-break: break-word;
-                    ">
+                <div style="background-color: #333; border-left: 3px solid #ffd700; border-radius: 5px; padding: 8px; margin-top: 4px;">
+                    <span style="color: #ffd700; font-style: italic; white-space: pre-wrap; word-break: break-word;">
                         {msg['thinking']}
                     </span>
                 </div>
@@ -232,7 +204,7 @@ def main():
                 "Message",
                 value=st.session_state.user_input_text,
                 height=100,
-                key="user_input_text"
+                key="user_input_text_form"
             )
 
             # Column layout for controls
@@ -249,11 +221,7 @@ def main():
                 st.checkbox(
                     "Force Chain-of-Thought",
                     key="force_thinking",
-                    value=(
-                        get_current_chat_data()["force_thinking"]
-                        if "force_thinking" in get_current_chat_data()
-                        else False
-                    )
+                    value=(get_current_chat_data()["force_thinking"] if "force_thinking" in get_current_chat_data() else False)
                 )
             
             with col3:
@@ -261,7 +229,6 @@ def main():
 
             # Send button
             if st.form_submit_button("Send"):
-                st.session_state.user_input_text = ""
                 prompt = user_input.strip()
                 if prompt:
                     try:
@@ -281,6 +248,9 @@ def main():
                                 current_chat_data["messages"].append(assistant_response)
                     except Exception as e:
                         st.error(f"Error sending message: {e}")
+        
+        # Clear input after submission
+        st.session_state.user_input_text = ""
 
 if __name__ == "__main__":
     main()
