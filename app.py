@@ -3,6 +3,7 @@ import boto3
 import json
 import re
 from datetime import datetime, timedelta
+import urllib.parse
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -17,10 +18,20 @@ MODEL_ARN = (
 )
 
 st.set_page_config(
-    page_title="Claude Chat (Enhanced)",
-    page_icon="🤖",
+    page_title="Claude Chat (Artisan's Release)",
+    page_icon="🎨",
     layout="wide"
 )
+
+# -----------------------------------------------------------------------------
+# PROMPT TEMPLATES
+# -----------------------------------------------------------------------------
+PROMPT_TEMPLATES = {
+    "Default": "You are Claude. Provide chain-of-thought if forced.",
+    "Technical": "You are Claude. Focus on technical accuracy and provide detailed explanations with code examples when relevant.",
+    "Statistical": "You are Claude. Focus on statistical analysis and data interpretation. Explain your statistical thinking process.",
+    "Research": "You are Claude. Approach topics academically, citing your knowledge sources and explaining your reasoning."
+}
 
 # -----------------------------------------------------------------------------
 # REFRESH CONTROL
@@ -94,11 +105,21 @@ st.markdown("""
 .stButton > button {
     width: 100%;
 }
-/* Enhancement: Add smooth transitions */
 .chat-message {
     transition: all 0.3s ease;
 }
 </style>
+
+<script>
+document.addEventListener('keydown', function(e) {
+    if (e.ctrlKey && e.key === 'Enter') {
+        const sendButton = Array.from(document.querySelectorAll('button')).find(
+            button => button.innerText === 'Send Message'
+        );
+        if (sendButton) sendButton.click();
+    }
+});
+</script>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
@@ -347,7 +368,7 @@ def handle_message(user_msg_str, chat_data, temperature, max_tokens):
 col_chat, col_settings = st.columns([2,1], gap="large")
 
 with col_settings:
-    st.title("Claude Chat (Enhanced)")
+    st.title("Claude Chat (Artisan's Release)")
 
     # Refresh Control
     st.subheader("Refresh Control")
@@ -400,11 +421,21 @@ with col_settings:
     temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
     max_tokens = st.slider("Max Tokens", 100, 4096, 1000)
 
-    # System Prompt
+    # System Prompt Templates
     st.subheader("System Prompt")
+    template_choice = st.selectbox(
+        "Prompt Template",
+        options=["Custom"] + list(PROMPT_TEMPLATES.keys()),
+        help="Select a pre-defined system prompt or use custom"
+    )
+    
+    if template_choice != "Custom":
+        chat_data["system_prompt"] = PROMPT_TEMPLATES[template_choice]
+    
     chat_data["system_prompt"] = st.text_area(
         "Claude instructions",
-        value=chat_data.get("system_prompt","")
+        value=chat_data["system_prompt"],
+        height=100
     )
 
     # Chain-of-Thought
@@ -419,9 +450,33 @@ with col_settings:
     )
 
     # Usage
-    st.subheader("Usage")
-    tok_count = total_token_usage(chat_data)
-    st.write(f"Approx tokens: **{tok_count}**")
+    st.subheader("Token Usage")
+    current_tokens = total_token_usage(chat_data)
+    st.metric(
+        "Approximate Tokens",
+        value=current_tokens,
+        delta=f"{current_tokens - st.session_state.get('last_token_count', current_tokens)}",
+        help="Approximate token count for current conversation"
+    )
+    st.session_state.last_token_count = current_tokens
+
+    # Export Chat
+    st.subheader("Export Chat")
+    if st.button("📥 Export Current Chat"):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        chat_text = "# Chat Export\n\n"
+        chat_text += f"System Prompt: {chat_data['system_prompt']}\n\n"
+        for msg in chat_data["messages"]:
+            chat_text += f"## {msg['role'].title()} ({msg['timestamp']})\n{msg['content']}\n\n"
+            if msg.get('thinking'):
+                chat_text += f"### Thinking Process\n{msg['thinking']}\n\n"
+        
+        st.download_button(
+            "💾 Download Chat Log",
+            chat_text,
+            f"chat_export_{timestamp}.md",
+            "text/markdown"
+        )
 
     # Save/Load S3
     st.subheader("Save/Load to S3")
@@ -469,24 +524,31 @@ with col_chat:
                 )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Message input with enhanced handling
-    st.subheader("Type Your Message")
-    st.session_state.user_input_text = st.text_area(
-        "Message",
-        value=st.session_state.user_input_text,
-        key="message_input"
-    )
+    # Enhanced Message Input
+    st.subheader("Type Your Message (Ctrl+Enter to send)")
+    input_col1, input_col2 = st.columns([4, 1])
+    with input_col1:
+        st.session_state.user_input_text = st.text_area(
+            "Message",
+            value=st.session_state.user_input_text,
+            key="message_input",
+            height=100
+        )
+    with input_col2:
+        st.markdown("#### Quick Links")
+        if st.session_state.user_input_text:
+            search_url = f"https://www.perplexity.ai/search?q={urllib.parse.quote(st.session_state.user_input_text)}"
+            st.markdown(f"[🔍 Search Topic]({search_url})")
 
-    if st.button("Send Message"):
-        if handle_message(
-            st.session_state.user_input_text,
-            chat_data,
-            temperature,
-            max_tokens
-        ):
-            st.session_state.user_input_text = ""  # Clear input only on success
-            if st.session_state.refresh_state["auto_refresh"]:
-                st.rerun()
+    send_col1, send_col2 = st.columns([4, 1])
+    with send_col1:
+        if st.button("Send Message", use_container_width=True):
+            handle_message(
+                st.session_state.user_input_text,
+                chat_data,
+                temperature,
+                max_tokens
+            )
 
 # Auto-refresh handling
 if st.session_state.refresh_state["auto_refresh"] and should_update():
