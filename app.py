@@ -6,6 +6,33 @@ from datetime import datetime
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+# At the top of app.py, after imports
+try:
+    from config.styles import CUSTOM_CSS
+    from modules.aws_utils import get_bedrock_client, get_s3_client
+    USE_MODULES = True
+except ImportError:
+    USE_MODULES = False
+    # Original CSS and client functions remain as fallback
+
+# Replace the CSS section with:
+if USE_MODULES:
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <style>
+    # ... (original CSS) ...
+    </style>
+    """, unsafe_allow_html=True)
+
+# Replace the AWS client sections:
+if USE_MODULES:
+    bedrock_client = get_bedrock_client()
+    s3_client = get_s3_client()
+else:
+    # Original client initialization code
+
+
 # -----------------------------------------------------------------------------
 # CONFIG
 # -----------------------------------------------------------------------------
