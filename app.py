@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
+import time
 
 # -----------------------------------------------------------------------------
 # CONFIG
@@ -308,21 +309,24 @@ with col_settings:
 with col_chat:
     st.header(f"Conversation: {st.session_state.current_chat}")
 
-    st.experimental_autorefresh(interval=10 * 1000)
+    chat_display = st.empty()
 
-    st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
-    for i, msg in enumerate(chat_data["messages"]):
-        bubble_class = "assistant-bubble" if msg["role"] == "assistant" else "user-bubble"
-        st.markdown(f"<div class='{bubble_class}'>{msg['content']}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='timestamp'>{msg.get('timestamp', '')}</div>", unsafe_allow_html=True)
+    for _ in range(100):  # Auto-refresh for a limited number of iterations to prevent infinite loops
+        with chat_display.container():
+            st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
+            for i, msg in enumerate(chat_data["messages"]):
+                bubble_class = "assistant-bubble" if msg["role"] == "assistant" else "user-bubble"
+                st.markdown(f"<div class='{bubble_class}'>{msg['content']}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='timestamp'>{msg.get('timestamp', '')}</div>", unsafe_allow_html=True)
 
-        if msg["role"] == "assistant" and msg.get("thinking"):
-            with st.expander("Chain-of-Thought"):
-                st.markdown(
-                    f"<div class='thinking-expander'><span class='thinking-text'>{msg['thinking']}</span></div>",
-                    unsafe_allow_html=True
-                )
-    st.markdown("</div>", unsafe_allow_html=True)
+                if msg["role"] == "assistant" and msg.get("thinking"):
+                    with st.expander("Chain-of-Thought"):
+                        st.markdown(
+                            f"<div class='thinking-expander'><span class='thinking-text'>{msg['thinking']}</span></div>",
+                            unsafe_allow_html=True
+                        )
+            st.markdown("</div>", unsafe_allow_html=True)
+        time.sleep(10)
 
     st.subheader("Send a Message")
     user_input = st.text_area("Type your message", value=st.session_state.user_input_text, height=75)
